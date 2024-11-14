@@ -1,5 +1,16 @@
-# python3 rename_libfmt.py ~/git/quill/quill/include/quill/bundled/fmt FMTQUILL fmtquill
-# python3 rename_libfmt.py ~/git/quill/quill/src/bundled/fmt FMTQUILL fmtquill
+# python3 rename_libfmt.py ~/git/quill/include/quill/bundled/fmt FMTQUILL fmtquill
+
+# Update bundled libfmt 11.0.2:
+# 1) run python3 rename_libfmt.py ~/git/quill/include/quill/bundled/fmt FMTQUILL fmtquill
+# 2) Add to base.h
+#     #if !defined(FMTQUILL_HEADER_ONLY)
+#       #define FMTQUILL_HEADER_ONLY
+#     #endif
+# 3) in base.h remove format.h always included for FMTQUILL_HEADER_ONLY at the end of file
+# 4) Change private to protected in fmt::buffer class
+# 5) Change append to use memcpy,       if constexpr (std::is_same<T, U>::value) {
+#         memcpy(ptr_ + size_, begin, count * sizeof(T));
+#       } else
 
 import sys
 import os

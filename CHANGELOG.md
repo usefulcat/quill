@@ -1,3 +1,26 @@
+- [v7.5.0](#v750)
+- [v7.4.0](#v740)
+- [v7.3.0](#v730)
+- [v7.2.2](#v722)
+- [v7.2.1](#v721)
+- [v7.2.0](#v720)
+- [v7.1.0](#v710)
+- [v7.0.0](#v700)
+- [v6.1.2](#v612)
+- [v6.1.1](#v611)
+- [v6.1.0](#v610)
+- [v6.0.0](#v600)
+- [v5.1.0](#v510)
+- [v5.0.0](#v500)
+- [v4.5.0](#v450)
+- [v4.4.1](#v441)
+- [v4.4.0](#v440)
+- [v4.3.0](#v430)
+- [v4.2.1](#v421)
+- [v4.2.0](#v420)
+- [v4.1.0](#v410)
+- [v4.0.0](#v400)
+- [v3.9.0](#v390)
 - [v3.8.0](#v380)
 - [v3.7.0](#v370)
 - [v3.6.0](#v360)
@@ -56,6 +79,680 @@
 - [v1.2.0](#v120)
 - [v1.1.0](#v110)
 - [v1.0.0](#v100)
+
+## v7.5.0
+
+- In previous versions, logging on Windows automatically included `windows.h` in all components. The frontend will no
+  longer include `windows.h`. By following the recommended usage example
+  provided [here](https://github.com/odygrd/quill/blob/master/examples/recommended_usage/recommended_usage.cpp) as
+  guidance, you can create a wrapper library around Quill for the backend, allowing you to
+  log on Windows without including `windows.h` in the frontend or main
+  program. ([#618](https://github.com/odygrd/quill/issues/618))
+
+- The `LOG_LEVEL_LIMIT` time-based rate-limiting macros now log the count of how many times a message would be logged
+  when throttled. For example, a log message may appear as `A log message with number 123 (21x)` to indicate that the
+  message would have been logged 21 times. ([#616](https://github.com/odygrd/quill/issues/616))
+
+- New macros `LOG_LEVEL_LIMIT_EVERY_N` have been added, allowing for count-based rate limiting and giving developers
+  greater control over logging frequency. ([#616](https://github.com/odygrd/quill/issues/616))
+
+- Renamed `PACKED` used in `libfmt` to `QUILLPACKED` to avoid naming
+  collisions. ([#620](https://github.com/odygrd/quill/issues/620))
+
+- The `set_thread_name` function has been fixed to provide accurate error reporting, ensuring that the correct error
+  message is displayed in the event of a failure.
+
+## v7.4.0
+
+- Fixed a build issue when compiling with `-fno-rtti`. This ensures compatibility with projects that disable
+  `RTTI`. ([#604](https://github.com/odygrd/quill/issues/604))
+- Fixed an incorrectly triggered assertion in debug builds when `BackendOptions::log_timestamp_ordering_grace_period` is
+  set to 0. ([#605](https://github.com/odygrd/quill/issues/605))
+- Fixed a compile-time error in `CsvWriter` that occurred when passing a custom `FrontendOptions` type as a template
+  parameter. ([#609](https://github.com/odygrd/quill/issues/609))
+- Added accessors to `Logger` for sinks, user clock source, clock source type, and pattern formatter options that can be
+  used to create another `Logger` with similar configuration.
+- Added `ConsoleColours::ColourMode` to `ConsoleSink`, allowing colors to be explicitly forced or conditionally enabled
+  based on the environment. Previously, colors were only conditionally
+  enabled. ([#611](https://github.com/odygrd/quill/issues/611)).
+
+  For example:
+  ```cpp
+    quill::Frontend::create_or_get_sink<quill::ConsoleSink>(
+      "sink_id_1", quill::ConsoleColours::ColourMode::Automatic);
+
+## v7.3.0
+
+- Added the option to explicitly specify the `Logger` used by the built-in `SignalHandler` for logging errors during
+  application crashes. ([#590](https://github.com/odygrd/quill/issues/590))
+- Prevented error logs from the `SignalHandler` from being output to CSV files when a `CsvWriter` is in
+  use. ([#588](https://github.com/odygrd/quill/issues/588))
+- Introduced `SignalHandlerOptions` to simplify and unify the API. `Backend::start_with_signal_handler` is now
+  deprecated, replaced by a new `Backend::start` overload that accepts `SignalHandlerOptions` for enabling signal
+  handling.
+- Added a new `create_or_get_logger` overload that accepts a `std::vector<std::shared_ptr<Sink>>`, improving flexibility
+  by allowing a variable number of sinks to be passed at runtime when creating a logger.
+- Added a new overload to `create_or_get_logger` to create a logger that inherits configuration options from a specified
+  logger. ([#596](https://github.com/odygrd/quill/issues/596))
+- Implemented a workaround to resolve false positive warnings from `clang-tidy` on Windows.
+
+## v7.2.2
+
+- Fixed race condition during DLL unload by ensuring safe cleanup of `ThreadContext` when
+  calling `flush_log()` ([#586](https://github.com/odygrd/quill/issues/586))
+
+## v7.2.1
+
+- Fixed an unused variable warning treated as an error on MSVC.
+
+## v7.2.0
+
+**Bug Fixes:**
+
+- Fixed compile error in `BackendTscClock` ([#577](https://github.com/odygrd/quill/issues/577))
+- Added a missing header include in `TriviallyCopyableCodec.h`. ([#560](https://github.com/odygrd/quill/issues/560))
+- Fixed incorrect log level short codes introduced in v7 after adding the new log level `NOTICE`. Using
+  `%(log_level_short_code)` in the pattern formatter could incorrectly map `LOG_ERROR` to `"C"` and LOG_WARNING
+  to `"E"`. ([#564](https://github.com/odygrd/quill/issues/564))
+- Fixed an overflow issue when logging more than `uint32_t::max()` bytes in a single log message. For example,
+  attempting to log `std::string s(std::numeric_limits<uint32_t>::max(), 'a');` would previously cause a crash.
+
+**Improvements:**
+
+- Optimised dynamic log level handling and size calculation for fundamental types, `std::string` and `std::
+  string_view` on the hot path.
+- Several enhancements to the backend worker thread, resulting in an overall 10% backend throughput increase.
+  Key optimizations include the simplification of `TransitEventBuffer`, reducing the memory footprint of `TransitEvent`,
+  introducing support for custom buffer sizes in file streams and tuning `transit_events_soft_limit`
+  and `transit_events_hard_limit` default values
+- Improved readability of queue allocation notification messages. Capacities are now displayed in KiB,
+  e.g.,
+  `20:59:25 Quill INFO: Allocated a new SPSC queue with a capacity of 1024 KB (previously 512 KB) from thread 31158`.
+
+**New Features:**
+
+- Introduced support for custom buffer sizes in file streams for `FileSink` and `RotatingFileSink`. Buffer size is
+  now configurable via `FileSinkConfig::set_write_buffer_size(size_value)` with a default of 64 KB.
+- Added an optional `fsync` interval to control the minimum time between consecutive `fsync` calls, reducing disk wear
+  from frequent fsync operations. This option is only applicable when `fsync` is
+  enabled. ([#557](https://github.com/odygrd/quill/issues/557))
+- Implemented support for appending a custom timestamp format to log filenames via `StartCustomTimestampFormat`.
+  Example usage:
+  ```cpp
+  auto file_sink = quill::Frontend::create_or_get_sink<quill::FileSink>("logfile.log", []()
+  {
+    quill::FileSinkConfig cfg;
+    cfg.set_filename_append_option(quill::FilenameAppendOption::StartCustomTimestampFormat, "%m%d");
+    return cfg;
+  }());
+  ```
+  This will create a log file named `logfile0919.log`, where `0919` represents the month and day.
+- When using `%(named_args)` in the pattern formatter or logging in JSON format, extra
+  arguments without key names are now included in JSON output with keys corresponding to their positional indexes.
+  This allows additional details to be included in the JSON while keeping the log message clean. For
+  example ([#563](https://github.com/odygrd/quill/discussions/563)):
+  ```cpp
+  LOG_INFO(hybrid_logger, "Operation {name} completed with code {code}", "Update", 123, "Data synced successfully");
+  ```
+  This will output:
+  ```
+  Operation Update completed with code 123
+  ```
+  And the corresponding JSON will be:
+  ```
+  {"timestamp":"1726582319816776867","file_name":"json_file_logging.cpp","line":"71","thread_id":"25462","logger":"hybrid_logger","log_level":"INFO","message":"Operation {name} completed with code {code}","name":"Update","code":"123","_2":"Data synced successfully"}
+  ```
+
+## v7.1.0
+
+- Fixed crash when using `QueueType::BoundedDropping` or `QueueType::UnboundedDropping` after a message
+  drops. ([#553](https://github.com/odygrd/quill/issues/553))
+- Improved performance of `ForwardList` decoding.
+- Corrected reported dropped message count; previously, log flush attempts were incorrectly included.
+- Removed leftover files after running some unit tests.
+- Stabilized regression tests.
+- Suppressed false-positive `-Wstringop-overflow` warnings (e.g., with GCC 13).
+- Fixed MinGW build and added MinGW builds to GitHub Actions.
+
+## v7.0.0
+
+- Simplified the log tags API. The `Tags` class has been removed. You now pass a `char const*` directly to the macros.
+  Additionally, macros previously named `WITH_TAGS` have been renamed to `_TAGS`. For example, `LOG_INFO_WITH_TAGS` is
+  now `LOG_INFO_TAGS`.
+- Renamed `backend_cpu_affinity` to `cpu_affinity` in `BackendOptions` to improve consistency.
+- Simplified project structure by removing the extra quill directory and made minor CMake improvements; `include/quill`
+  is now directly in the root.
+- Added support for `std::string` with custom allocator. ([#524](https://github.com/odygrd/quill/issues/524))
+- Added a new log level `NOTICE`, for capturing significant events that aren't errors or warnings. It fits
+  between `INFO` and `WARNING` for logging important runtime events that require
+  attention. ([#526](https://github.com/odygrd/quill/pull/526))
+- Enhanced static assert error message for unsupported codecs, providing clearer guidance for STL and user-defined
+  types.
+- Improved frontend performance by caching the `ThreadContext` pointer in `Logger` class to avoid repeated function
+  calls. On Linux, this is now further optimised with `__thread` for thread-local storage, while other platforms still
+  use `thread_local`.
+- Minor performance enhancement in the frontend by replacing `std::vector<size_t>` with an `InlinedVector<uint32_t, 12>`
+  for caching sizes (e.g. string arguments).
+- Fixed order of evaluation for `Codec::pair<T1,T2>::compute_encoded_size()` to prevent side effects observed on MSVC
+- Introduced the `add_metadata_to_multi_line_logs` option in `PatternFormatter`. This option, now enabled by default,
+  appends metadata such as timestamps and log levels to every line of multiline log entries, ensuring consistent log
+  output. To restore the previous behavior, set this option to false when creating a `Logger`
+  using `Frontend::create_or_get_logger(...)`. Note that this option is ignored when logging JSON using named arguments
+  in the format message. ([#534](https://github.com/odygrd/quill/pull/534))
+- `JSON` sinks now automatically remove any `\n` characters from format messages, ensuring the emission of valid `JSON`
+  messages even when `\n` is present in the format.
+- Replaced `static` variables with `static constexpr` in the `ConsoleColours` class.
+- Fixed compiler errors in a few rarely used macros. Added a comprehensive test for all macros to prevent similar issues
+  in the future.
+- Expanded terminal list for color detection in console applications on Linux
+- Fixed an issue where `char*` and `char[]` types could be incorrectly selected by the Codec template in `Array.h`
+- The library no longer defines `__STDC_WANT_LIB_EXT1__`, as the bounds-checking functions from the extensions are no
+  longer needed.
+- `StringFromTime` constructor no longer relies on the system's current time, improving performance in simulations where
+  timestamps differ from system time. ([#541](https://github.com/odygrd/quill/issues/541))
+- The `Frontend::create_or_get_logger(...)` function now accepts a `PatternFormatterOptions` parameter, simplifying the
+  API. This is a breaking change. To migrate quickly, wrap the existing formatting parameters in a
+  `PatternFormatterOptions` object.
+
+  **Before:**
+  ```c++
+    quill::Logger* logger =
+      quill::Frontend::create_or_get_logger("root", std::move(file_sink),
+                                            "%(time) [%(thread_id)] %(short_source_location:<28) "
+                                            "LOG_%(log_level:<9) %(logger:<12) %(message)",
+                                            "%H:%M:%S.%Qns", quill::Timezone::GmtTime);
+  ```
+
+  **After:**
+
+  ```c++
+    quill::Logger* logger =
+      quill::Frontend::create_or_get_logger("root", std::move(file_sink), quill::PatternFormatterOptions {
+                                            "%(time) [%(thread_id)] %(short_source_location:<28) "
+                                            "LOG_%(log_level:<9) %(logger:<12) %(message)",
+                                            "%H:%M:%S.%Qns", quill::Timezone::GmtTime});
+  ```
+
+## v6.1.2
+
+- Fix pkg-config file on windows
+
+## v6.1.1
+
+- Fix pkg-config file
+
+## v6.1.0
+
+- Fix various compiler warnings
+- Minor serialisation improvements in `Array.h` and `Chrono.h`
+- Introduced `Backend::acquire_manual_backend_worker()` as an advanced feature, enabling users to manage the backend
+  worker on a custom thread. This feature is intended for advanced use cases where greater control over threading is
+  required. ([#519](https://github.com/odygrd/quill/issues/519))
+- Add new `CsvWriter` utility class for asynchronous CSV file writing. For example:
+  ```c++
+  #include "quill/Backend.h"
+  #include "quill/core/FrontendOptions.h"
+  #include "quill/CsvWriter.h"
+  
+  struct OrderCsvSchema
+  {
+    static constexpr char const* header = "order_id,symbol,quantity,price,side";
+    static constexpr char const* format = "{},{},{},{:.2f},{}";
+  };
+  
+  int main()
+  {
+    quill::BackendOptions backend_options;
+    quill::Backend::start(backend_options);
+    
+    quill::CsvWriter<OrderCsvSchema, quill::FrontendOptions> csv_writer {"orders.csv"};
+    csv_writer.append_row(13212123, "AAPL", 100, 210.32321, "BUY");
+    csv_writer.append_row(132121123, "META", 300, 478.32321, "SELL");
+    csv_writer.append_row(13212123, "AAPL", 120, 210.42321, "BUY");
+  }
+  ```
+
+## v6.0.0
+
+- Added a [Cheat Sheet](https://quillcpp.readthedocs.io/en/latest/cheat_sheet.html) to help users get the most out of
+  the logging library
+
+- Removed `ArgSizeCalculator<>`, `Encoder<>`, and `Decoder<>` classes. These have been consolidated into a
+  single `Codec` class. Users who wish to pass user-defined objects should now specialize this single `Codec` class
+  instead of managing three separate classes. For guidance, please refer to the updated advanced example
+
+- Added `TriviallyCopyableCodec.h` to facilitate serialization for trivially copyable user-defined types. For example
+
+  ```c++
+    struct TCStruct
+    {
+      int a;
+      double b;
+      char c[12];
+      
+      friend std::ostream& operator<<(std::ostream& os, TCStruct const& arg)
+      {
+        os << "a: " << arg.a << ", b: " << arg.b << ", c: " << arg.c;
+        return os;
+      }
+    };
+    
+    template <>
+    struct fmtquill::formatter<TCStruct> : fmtquill::ostream_formatter
+    {
+    };
+    
+    template <>
+    struct quill::Codec<TCStruct> : quill::TriviallyCopyableTypeCodec<TCStruct>
+    {
+    };
+    
+    int main()
+    {
+      // init code ...
+      
+      TCStruct tc;
+      tc.a = 123;
+      tc.b = 321;
+      tc.c[0] = '\0';
+      LOG_INFO(logger, "{}", tc);
+    }
+  ```
+
+- Added support for passing arithmetic or enum c style arrays when `std/Array.h` is included. For example
+
+  ```c++
+    #include "quill/std/Array.h"
+  
+    int a[6] = {123, 456};
+    LOG_INFO(logger, "a {}", a);
+  ```
+
+- Added support for `void const*` formatting. For example
+
+  ```c++
+      int a = 123;
+      int* b = &a;
+      LOG_INFO(logger, "{}", fmt::ptr(b));
+  ```
+
+- Added support for formatting `std::chrono::time_point` and `std::chrono::duration` with the inclusion
+  of `quill/std/Chrono.h`
+
+   ```c++
+   #include "quill/std/Chrono.h"
+  
+   std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
+   LOG_INFO(logger, "time is {}", now);
+   ```
+
+- Removed unused method from `ConsoleSink`
+
+## v5.1.0
+
+- Fix unit tests on FreeBSD ([#496](https://github.com/odygrd/quill/issues/496))
+- Resolved unused variable warning on MSVC.
+- Updated CMake to avoid adding `-fno-exceptions` to the entire target
+  when `QUILL_NO_EXCEPTIONS=ON` ([#499](https://github.com/odygrd/quill/issues/499))
+- Fix an issue where timestamps were incorrectly calculated when using `quill::Timezone::LocalTime`. This bug affected
+  timezones that did not have an exact hour difference from UTC, leading to incorrect timestamp
+  calculations. ([#498](https://github.com/odygrd/quill/issues/498))
+- The newline character `\n` is now considered printable by default and will no longer be sanitized. Users can now
+  include new lines in their logs directly. In versions `4.4.1` and earlier, `\n` was not sanitized, and this behavior
+  is restored in this update, eliminating the need for a custom `check_printable_char` function in `BackendOptions`.
+- On Windows, when colors are enabled in `ConsoleSink`, `GetConsoleScreenBufferInfo` may fail in the debug console.
+  Previously, this would result in an error being displayed but no logs being written. This issue is now resolved: the
+  error is reported once, and logs will be written to the console without colors.
+- Improved performance of `StringFromTime` and `TimestampFormatter` used by the backend worker thread.
+- Replaced `std::mutex` with a spinlock, resulting in minor performance improvement for backend worker. This change
+  also avoids including `<mutex>` in the frontend, particularly when following the
+  [recommended_usage](https://github.com/odygrd/quill/blob/master/examples/recommended_usage/recommended_usage.cpp)
+  example
+- Update bundled `libfmt` to `11.0.2`
+
+## v5.0.0
+
+- Fix build failure on Windows Arm64 ([#485](https://github.com/odygrd/quill/issues/485))
+- Previously, wide string support was included in `Codec.h`. Wide string functionality has now been moved to a separate
+  header file, `WideStrings.h`. On Windows, logging wide strings now requires the inclusion
+  of `quill/std/WideStrings.h`.
+- Added `QUILL_IMMEDIATE_FLUSH` preprocessor variable. This variable can be defined before including `LogMacros.h` or
+  passed as a compiler flag. When `QUILL_IMMEDIATE_FLUSH` is defined, the library will flush the log on each log
+  statement. This causes the caller thread to wait for the log to be processed and written to the log file by the
+  backend thread before continuing, significantly impacting performance. This feature is useful for debugging the
+  application when synchronized logs are required. ([#488](https://github.com/odygrd/quill/issues/488))
+- Introduced `log_level_descriptions` and `log_level_short_codes` in `BackendOptions` to allow customization
+  of `LogLevel` descriptions and short codes, replacing previously hardcoded values. This enhancement enables users to
+  define their own descriptions and short codes for each log level. For instance, instead of displaying `LOG_WARNING`,
+  it can now be configured to show `LOG_WARN`. ([#489](https://github.com/odygrd/quill/issues/489))
+
+    ```c++  
+    quill::BackendOptions backend_options;
+    backend_options.log_level_descriptions[static_cast<uint32_t>(quill::LogLevel::Warning)] = "WARN";
+    quill::Backend::start(backend_options);
+    ```
+
+- Introduced `LOGV_LEVEL`, `LOGV_LEVEL_LIMIT`, and `LOGV_LEVEL_WITH_TAGS` macros. These new macros simplify logging by
+  automatically printing variable names and values without explicitly specifying each variable name or using `{}`
+  placeholders in the format string. Each macro can handle up to 26 arguments. The format string is concatenated at
+  compile time, there is no runtime overhead for using these macros. For example:
+
+  ```c++
+    int a = 123;
+    double b = 3.17;
+    LOGV_INFO(logger, "A message with two variables", a, b)
+  ```
+  outputs `A message with two variables [a: 123, b: 3.17]`
+
+- Introduced `LOGJ_LEVEL`, `LOGJ_LEVEL_LIMIT`, and `LOGJ_LEVEL_WITH_TAGS` macros. These new macros simplify JSON logging
+  by automatically embedding the name of each passed variable as a named argument in the format string. Each macro can
+  handle up to 26 arguments. The format string is concatenated at compile time, there is no runtime overhead for using
+  these macros. For example:
+
+  ```c++
+    int var_a = 123;
+    std::string var_b = "test";
+    LOGJ_INFO(logger, "A json message", var_a, var_b);
+  ```
+  outputs `{"log_level":"INFO","message":"A json message {var_a}, {var_b}","var_a":"123","var_b":"test"}`
+
+- Enhanced the `filter` function to also receive the formatted `log_message` alongside the log_statement, enabling the
+  comparison and filtering of `log_message` while disregarding elements like timestamps from the
+  full `log_statement`. ([#493](https://github.com/odygrd/quill/issues/493))
+
+- Renamed `log_message` to `log_statement` and `should_log_message` to `should_log_statement` in `Logger`
+- Replaced `%(log_level_id)` with `%(log_level_short_code)` in the `PatternFormatter`.
+
+- Fix a `CMakeLists` error for old `CMake` versions prior
+  to `3.19`. ([#491](https://github.com/odygrd/quill/issues/491))
+
+## v4.5.0
+
+- The backend now automatically sanitizes non-printable characters in log messages by converting them to
+  their hexadecimal representation. This feature ensures logs contain only safe, readable characters. You can customize
+  or disable this feature through the backend options by modifying the `check_printable_char` callback
+  in `BackendOptions`.
+
+  ```c++  
+  std::function<bool(char c)> check_printable_char = [](char c) { return c >= ' ' && c <= '~'; };
+  ```
+
+- Added `StringRef`, a utility for passing string arguments by reference without copying. Suitable for string literals
+  or immutable strings with a guaranteed persistent lifetime. For example
+
+  ```c++  
+  #include "quill/StringRef.h"
+  
+  static constexpr std::string_view sv {"string_view"};
+  LOG_INFO(logger, "{} {}", quill::utility::StringRef{sv}, quill::utility::StringRef{"string_literal"});
+  ```
+
+- Renamed `write_log_message` to `write_log` in `Sink`. The formatted `log_message` and `process_id` are now also
+  provided. This enhancement supports use cases where the formatted `log_statement` passed to the `Sink` can be ignored
+  and overwritten with a custom format, allowing a single `Logger` to output different formats to various Sinks.
+  ([#476](https://github.com/odygrd/quill/issues/476))
+
+- Fixed a bug in JSON logging where previously cached named arguments could erroneously append to subsequent log
+  statements. ([#482](https://github.com/odygrd/quill/issues/482))
+
+## v4.4.1
+
+- Fixed multiple definitions of `quill::detail::get_error_message` ([#469](https://github.com/odygrd/quill/issues/469))
+- Fixed an issue causing a `SIGABRT` when creating directories with a symlink folder path using GCC versions 8 or
+  9 ([#468](https://github.com/odygrd/quill/issues/468))
+- Added an assertion to prevent the use of custom `FrontendOptions` together with
+  default `FrontendOptions` ([#453](https://github.com/odygrd/quill/issues/453))
+
+## v4.4.0
+
+- Introduced `log_timestamp_ordering_grace_period parameter`, replacing `enable_strict_log_timestamp_order` in
+  `BackendOptions`. Enables strict timestamp ordering with configurable grace period.
+- Fixed an issue where symbols were not properly exported with hidden visibility when compiling as a shared
+  library. ([#463](https://github.com/odygrd/quill/issues/463))
+- Move version info into quill namespace ([#465](https://github.com/odygrd/quill/issues/465))
+- Upstreamed `Meson` build integration. See details [here](https://github.com/odygrd/quill?tab=readme-ov-file#meson)
+- Upstreamed `Bazel` build integration. See details [here](https://github.com/odygrd/quill?tab=readme-ov-file#bazel)
+
+## v4.3.0
+
+- Refactored `BacktraceStorage` to simplify the code.
+- Fixed multiple definitions of `on_alarm` in `SignalHandler.h`
+- Fixed a bug in the backend thread where `flush()` and `run_periodic_tasks()` were skipped for certain sinks. All sinks
+  are now correctly processed.
+
+## v4.2.1
+
+- Added `-Wno-gnu-zero-variadic-macro-arguments` as an interface compiler flag in CMake
+
+## v4.2.0
+
+- Fixed the compile-time exclusion of log levels. Renamed the `QUILL_COMPILE_OUT_LOG_LEVEL` preprocessor
+  flag to `QUILL_COMPILE_ACTIVE_LOG_LEVEL`.
+- Fixed build error when `UnboundedDropping` queue is used.
+- Fixed a bug introduced in `v4.1.0`, which resulted in messages being logged out of order when
+  the `transit_events_soft_limit` was reached. Additionally, this issue affected the behavior of `flush_log()`,
+  prematurely unblocking the thread before all messages were flushed.
+- Fixed `-Wno-unused-parameter` and `-Wdocumentation` warnings.
+- Improved backend worker `_exit()` functionality and reduced code duplication in other areas of the backend worker
+  code.
+- Added `signal_handler_timeout_seconds` parameter, which controls the timeout duration for the signal handler. Only
+  available on Linux platforms.
+- Added `sleep_duration_ns` parameter to the `flush_log(...)` function. This parameter specifies the duration in
+  nanoseconds to sleep between retries between checks for the flush completion and when a blocking queue is used,
+  and it is full. The default sleep duration is 100 nanoseconds, but users can now customize this duration according to
+  their needs. If a zero sleep duration is passed, the thread might yield instead.
+- Removed uses of `std::this_thread::sleep_for(...)`, `std::string`, `std::vector` in the signal handler when waiting
+  for
+  the log to be flushed.
+
+## v4.1.0
+
+- Following the transition from a compiled to a header-only library, the `target_compile_options` previously applied to
+  the compiled library were mistakenly propagated to all programs linking against the header-only library.
+  This issue is now fixed by removing those flags and explicitly adding them to tests and examples. As a result,
+  executable targets no longer inherit flags from the library.
+- Removed unnecessary template specializations and merged their logic into the primary template
+  for `ArgSizeCalculator`, `Encoder`, and `Decoder` using if constexpr.
+- Eliminated `<functional>` header dependency in the frontend
+- Replaced `%(structured_keys)` with `%(named_args)` in the `PatternFormatter`. This change now appends the
+  entire key-value pair of named args to the message, not just the names.
+- Relocated certain classes to the `detail` namespace
+- Replaced `sprintf` with `snprintf` to fix macOS warning.
+- Reviewed and removed gcc cold attribute from a few functions.
+- Minor backend thread optimisations when logging c style strings or char arrays
+- Improved backend thread variable and function names and fixed a bug for an edge case when the transit event hard limit
+  is reached
+
+## v4.0.0
+
+This version represents a major revamp of the library, aiming to simplify and modernize it, resulting in the removal
+of a few features. Please read through the changes carefully before upgrading, as it is not backwards compatible with
+previous versions and some effort will be required to migrate.
+
+I understand that these changes may inconvenience some existing users. However, they have been made with good
+intentions, aiming to improve and refine the logging library. This involved significant effort and dedication.
+
+Bug fixes and releases for `v3` will continue to be supported under the `v3.x.x` branch.
+
+#### Comparison
+
+- This version significantly improves compile times. Taking a look at some compiler profiling for a `Release` build with
+  clang 15, we can see the difference. Below are the two compiler flamegraphs for building the `recommended_usage`
+  example from the new version and the `wrapper_lib` example from the previous version.
+
+The below flamegraph shows the difference in included headers between the two versions
+
+| Version |                                                          Compiler FlameGraph                                                           |
+|---------|:--------------------------------------------------------------------------------------------------------------------------------------:|
+| v4.0.0  | ![quill_v4_compiler_profile.speedscope.png](https://github.com/odygrd/quill/blob/master/docs/quill_v4_compiler_profile.speedscope.png) |
+| v3.8.0  | ![quill_v3_compiler_profile.speedscope.png](https://github.com/odygrd/quill/blob/master/docs/quill_v3_compiler_profile.speedscope.png) |
+
+A new compiler benchmark has been introduced. A Python script generates 2000 distinct log statements with various
+arguments. You can find the
+benchmark [here](https://github.com/odygrd/quill/blob/master/benchmarks/compile_time/compile_time_bench.cpp).
+Compilation now takes only about 30 seconds, whereas the previous version required over 4 minutes.
+
+| Version |                                                         Compiler FlameGraph                                                          |
+|---------|:------------------------------------------------------------------------------------------------------------------------------------:|
+| v4.0.0  |  ![quill_v4_compiler_bench.speedscope.png](https://github.com/odygrd/quill/blob/master/docs/quill_v4_compiler_bench.speedscope.png)  |
+| v3.8.0  | ![quill_v3_compiler_bench.speedscope.png](https://github.com/odygrd/quill/blob/master/docs/quill_v4_compiler_profile.speedscope.png) |
+
+- Minor increase in backend thread throughput compared to the previous version.
+
+| Version |                                 Backend Throughput                                 |
+|---------|:----------------------------------------------------------------------------------:|
+| v4.0.0  | 4.56 million msgs/sec average, total time elapsed: 876 ms for 4000000 log messages |
+| v3.8.0  | 4.39 million msgs/sec average, total time elapsed: 910 ms for 4000000 log messages |
+
+- Significant boost in hot path latency when logging complex types such as `std::vector`.
+  The performance remains consistent when logging only primitive types or strings in both versions. Refer
+  [here](https://github.com/odygrd/quill?tab=readme-ov-file#performance) for updated and detailed benchmarks.
+
+#### Changes
+
+- **Improved compile times**
+
+The library has been restructured to minimize the number of required headers. Refactoring efforts have focused on
+decoupling the frontend from the backend, resulting in reduced dependencies. Accessing the frontend logging functions
+now does not demand inclusion of any backend logic components.
+
+     "quill/Backend.h" - It can be included once to start the backend logging thread, typically in main.cpp 
+                         or in a wrapper library.
+     
+     "quill/Frontend.h"` - Used to create or obtain a `Logger*` or a `Sink`. It can be included in limited 
+                           files, since an obtained `Logger*` has pointer stability and can be passed around.
+     
+     "quill/Logger.h", "quill/LogMacros.h" - These two files are the only ones needed for logging and will have 
+                                             to be included in every file that requires logging functionality.
+
+- **Backend formatting for user-defined and standard library types**
+
+One of the significant changes lies in the support for formatting both user-defined and standard library types.
+Previously, the backend thread handled the formatting of these types sent by the frontend. It involved making a copy for
+any object passed to the `LOG_` macros as an argument using the copy constructor of a complex type instead of directly
+serializing the data to the SPSC queue. While this method facilitated logging copy-constructible user-defined types with
+ease, it also posed numerous challenges for asynchronous logging:
+
+- Error-Prone Asynchronous Logging: Copying and formatting user-defined types on the backend thread in an
+  asynchronous logging setup could lead to errors. Previous versions attempted to address this issue with type
+  trait checks, which incurred additional template instantiations and compile times.
+- Uncertainty in Type Verification: It is challenging to confidently verify types, as some trivially copiable
+  types, such as `struct A { int* m; }`, could still lead to issues due to potential modifications by the user
+  before formatting.
+- Hidden Performance Penalties: Logging non-trivially copiable types could introduce hidden cache coherence
+  performance penalties due to memory allocations and deallocations across threads. For instance,
+  consider `std::vector<int>` passed as a log argument. The vector is emplaced into the SPSC queue by the frontend,
+  invoking the copy constructor dynamically allocating memory as the only members copied to SPSC queue
+  are `size`, `capacity`, and `data*`. The backend thread reads the object, formats it, and then invokes the destructor,
+  which in turn synchronizes the
+  freed memory back to the frontend.
+
+Additionally, after years of professional use and based on experience, it has been observed that user-defined types
+are often logged during program initialization, with fewer occurrences on the hot path where mostly built-in types are
+logged. In such scenarios, the overhead of string formatting on the frontend during initialization is not an issue.
+
+In this new version, the use of the copy constructor for emplacing objects in the queue has been abandoned. Only POD
+types are copied, ensuring that only raw, tangible data is handled without any underlying pointers pointing to other
+memory locations. The only exception to this are the pointers to `Metadata`, `LoggerBase` and `DecodeFunction`
+that are passed internally for each log message. Log arguments sent from the frontend must undergo
+serialization beforehand. While this approach resolves the above issues, it does introduce more complexity when
+dealing with user-defined or standard library types.
+
+Built-in types and strings are logged by default, with the formatting being offloaded to the backend. Additionally,
+there is built-in support for most standard library types, which can also be directly passed to the logger by
+including the relevant header from `quill/std`.
+
+The recommendation for user-defined types is to format them into strings before passing them to the `LOG_` macros using
+your preferred method. You can find an example of
+this [here](https://github.com/odygrd/quill/blob/master/examples/user_defined_types_logging.cpp).
+
+It's also possible to extend the library by providing template specializations to serialize the user-defined types
+and offload their formatting to the backend. However, this approach should only be pursued if you cannot tolerate the
+formatting overhead in that part of your program. For further guidance, refer
+to [this example](https://github.com/odygrd/quill/blob/master/examples/advanced/advanced.cpp).
+
+- **Header-Only library**
+
+The library is now header-only. This change simplifies exporting the library as a C++ module in the future. See
+[here](https://github.com/odygrd/quill/blob/master/examples/recommended_usage/recommended_usage.cpp) on how to build a
+wrapper static library which includes the backend and will minimise the compile times.
+
+- **Preprocessor flags moved to template parameters**
+
+Most preprocessor flags have been moved to template parameters, with only a few remaining as `CMake` options. This
+change simplifies exporting the library as a C++ module in the future.
+
+- **Renamed Handlers to Sinks**
+
+To enhance clarity, handlers have been renamed to sinks.
+
+- **PatternFormatter moved to Logger**
+
+The `PatternFormatter` has been relocated from `Sink` to `Logger`, enabling a logger object to log in a specific
+format. This allows for different formats within the same output file, a feature not previously possible.
+
+- **Split Configuration**
+
+The configuration settings have been divided into `FrontendOptions` and `BackendOptions`.
+
+- **Refactoring of backend classes**
+
+`MacroMetadata` and many backend classes have undergone refactoring, resulting in reduced memory requirements.
+
+- **Improved wide strings handling on Windows**
+
+The library now offers significant performance enhancements for handling wide strings on Windows platforms.
+It's important to note that only wide strings containing ASCII characters are supported. Previously, wide strings were
+converted to narrow strings at the frontend, impacting the critical path of the application.
+With this update, the underlying wide char buffer is copied and the conversion to UTF-8 encoding is deferred to
+the backend logging thread. Additionally, this update adds support for logging STL containers consisting of
+wide strings
+
+- **Default logger removal**
+
+The default logger, along with the configuration inheritance feature during logger creation, has been removed. Now, when
+creating a new logger instance, configurations such as the `Sink` and log pattern format must be explicitly specified
+each time. This simplifies the codebase.
+
+- **Global logger removal**
+
+The static global logger* variable that was initialised during `quill::start()` used to obtain the default logger has
+been removed. It is possible to add this on the user side. If you require a global logger you can have a look
+at [this example](https://github.com/odygrd/quill/blob/master/examples/recommended_usage/recommended_usage.cpp)
+
+- **Removal of printf style formatting support**
+
+The support for `printf` style formatting has been removed due to its limited usage and the increased complexity. Users
+requiring this feature should stay on `v3.x.x` versions to maintain compatibility.
+
+- **Removal of external libfmt usage**
+
+The option to build the library with external `libfmt` has been removed. It becomes difficult to maintain and backwards
+support previous versions of `libfmt`. Instead, `libfmt` is now an internal component of the library, accessible under
+the namespace `fmtquill`. You can use the bundled version of `fmtquill` by including the necessary headers from
+`quill/bundled/fmt`. Alternatively, you have the freedom to integrate your own version. Since `libfmt` is encapsulated
+within a distinct namespace, there are no conflicts even if you link your own `libfmt` alongside the logging library.
+
+#### Migration Guidance
+
+- Revise include files to accommodate the removal of `Quill.h`
+- Update the code that starts the backend thread and the logger/sink creation. You can refer to any of the
+  updated examples, such as [this one](https://github.com/odygrd/quill/blob/master/examples/file_logging.cpp)
+- When logging statements involving user-defined types, make sure these types are formatted into strings using
+  your preferred method. Refer to
+  [this link](https://github.com/odygrd/quill/blob/master/examples/user_defined_types_logging.cpp) for guidance.
+  Alternatively, if you prefer delaying the conversion to strings until the backend thread and only passing a
+  binary copy of the user-defined type on the hot path, you can provide the necessary class template
+  specializations for each user-defined type. See an example
+  [here](https://github.com/odygrd/quill/blob/master/examples/advanced/user_quill_codec.h)
+
+## v3.9.0
+
+- Fix bug in `ConsoleHandler` when dynamic log level is used ([#421](https://github.com/odygrd/quill/pull/421))
+- Fix bug in `TransitEvent` when dynamic log level is used ([#427](https://github.com/odygrd/quill/pull/427))
+- Fix build error for Intel compiler classic ([#414](https://github.com/odygrd/quill/pull/414))
+- Added `JsonConsoleHandler` ([#413](https://github.com/odygrd/quill/issues/413))
+- Fix fold expression argument evaluation. This bug could occur when logging c style strings
 
 ## v3.8.0
 
@@ -377,7 +1074,7 @@
   ```
 
 - Added support for huge pages on Linux. Enabling this feature allows bounded or unbounded queues to utilize huge pages,
-  resulting in optimized memory allocation.
+  resulting in optimised memory allocation.
 
   ```c++
     quill::Config cfg;

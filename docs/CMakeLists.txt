@@ -1,10 +1,10 @@
 find_package(Doxygen REQUIRED)
 
 # Find all the public headers
-get_target_property(QUILL_PUBLIC_HEADER_DIR quill INTERFACE_INCLUDE_DIRECTORIES)
-file(GLOB_RECURSE QUILL_PUBLIC_HEADERS ${QUILL_PUBLIC_HEADER_DIR}/*.h)
+set(QUILL_HEADER_DIR "${CMAKE_SOURCE_DIR}/include/quill")
+file(GLOB_RECURSE QUILL_PUBLIC_HEADERS "${QUILL_HEADER_DIR}/*.h")
 
-set(DOXYGEN_INPUT_DIR ${PROJECT_SOURCE_DIR}/quill)
+set(DOXYGEN_INPUT_DIR ${QUILL_HEADER_DIR})
 set(DOXYGEN_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/doxygen)
 set(DOXYGEN_INDEX_FILE ${DOXYGEN_OUTPUT_DIR}/xml/index.xml)
 set(DOXYFILE_IN ${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile.in)
@@ -41,12 +41,21 @@ add_custom_command(OUTPUT ${SPHINX_INDEX_FILE}
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
         DEPENDS
         # Other docs files you want to track should go here (or in some variable)
+        ${CMAKE_CURRENT_SOURCE_DIR}/basic_example.rst
+        ${CMAKE_CURRENT_SOURCE_DIR}/logging_macros.rst
+        ${CMAKE_CURRENT_SOURCE_DIR}/sinks.rst
+        ${CMAKE_CURRENT_SOURCE_DIR}/timestamp_types.rst
+        ${CMAKE_CURRENT_SOURCE_DIR}/sink_types.rst
+        ${CMAKE_CURRENT_SOURCE_DIR}/filters.rst
+        ${CMAKE_CURRENT_SOURCE_DIR}/formatters.rst
+        ${CMAKE_CURRENT_SOURCE_DIR}/loggers.rst
+        ${CMAKE_CURRENT_SOURCE_DIR}/backtrace_logging.rst
         ${CMAKE_CURRENT_SOURCE_DIR}/index.rst
         ${CMAKE_CURRENT_SOURCE_DIR}/users-api.rst
-        ${CMAKE_CURRENT_SOURCE_DIR}/install.rst
-        ${CMAKE_CURRENT_SOURCE_DIR}/usage.rst
-        ${CMAKE_CURRENT_SOURCE_DIR}/tutorial.rst
-        ${CMAKE_CURRENT_SOURCE_DIR}/features.rst
+        ${CMAKE_CURRENT_SOURCE_DIR}/installing.rst
+        ${CMAKE_CURRENT_SOURCE_DIR}/examples.rst
+        ${CMAKE_CURRENT_SOURCE_DIR}/overview.rst
+        ${CMAKE_CURRENT_SOURCE_DIR}/wide_strings.rst
         ${DOXYGEN_INDEX_FILE}
         MAIN_DEPENDENCY ${SPHINX_SOURCE}/conf.py
         COMMENT "Generating documentation with Sphinx")

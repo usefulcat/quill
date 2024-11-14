@@ -1,46 +1,117 @@
-.. _users-api:
+.. title:: User's API
 
-##############################################################################
 User's API
-##############################################################################
+==========
 
-Config Class
-=====================
+Backend Options
+---------------
 
-.. doxygenstruct:: quill::Config
+.. doxygenstruct:: BackendOptions
+   :members:
+
+Backend Class
+-------------
+
+.. doxygenclass:: Backend
+   :members:
+
+BackendTscClock Class
+---------------------
+
+.. doxygenclass:: BackendTscClock
+   :members:
+
+SignalHandler Options
+---------------
+
+.. doxygenstruct:: SignalHandlerOptions
+   :members:
+
+Frontend Options
+----------------
+
+.. doxygenstruct:: FrontendOptions
+   :members:
+
+Frontend Class
+--------------
+
+.. doxygenclass:: FrontendImpl
    :members:
 
 Log Levels
-=====================
+----------
 
-.. doxygenenum:: quill::LogLevel
+.. doxygenenum:: LogLevel
 
-Logger Class
-=====================
+LoggerImpl Class
+----------------
 
-.. doxygenclass:: quill::Logger
-   :members:
-
-Handler Base Class
-=====================
-
-.. doxygenclass:: quill::Handler
-   :members:
-
-Filter Base Class
-=====================
-
-.. doxygenclass:: quill::FilterBase
+.. doxygenclass:: LoggerImpl
    :members:
 
 PatternFormatter Class
-=========================
+----------------------
 
-.. doxygenclass:: quill::PatternFormatter
+.. doxygenclass:: PatternFormatter
    :members:
 
-Internal Classes
-=====================
+PatternFormatterOptions Class
+-----------------------------
 
-.. doxygenclass:: quill::detail::HandlerCollection
+.. doxygenclass:: PatternFormatterOptions
+   :members:
+
+Sink Class
+----------
+
+.. doxygenclass:: Sink
+   :members:
+
+Filter Class
+------------
+
+.. doxygenclass:: Filter
+   :members:
+
+FileSinkConfig Class
+--------------------
+
+.. doxygenclass:: FileSinkConfig
+   :members:
+
+FileSink Class
+--------------------
+
+.. doxygenclass:: FileSink
+   :members:
+
+RotatingFileSinkConfig Class
+----------------------------
+
+.. doxygenclass:: RotatingFileSinkConfig
+   :members:
+
+RotatingFileSink Class
+----------------------------
+
+.. doxygenclass:: RotatingFileSink
+   :members:
+
+JsonFileSink Class
+------------------
+
+.. doxygenclass:: JsonFileSink
+   :members:
+
+JsonConsoleSink Class
+---------------------
+
+.. doxygenclass:: JsonConsoleSink
+   :members:
+
+CsvWriter Class
+---------------
+
+.. doxygenclass:: CsvWriter
    :members:

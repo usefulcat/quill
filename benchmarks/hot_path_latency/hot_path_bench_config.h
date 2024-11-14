@@ -4,26 +4,28 @@
  */
 
 #pragma once
+
 #include <chrono>
 
 /**
- * When running the benchmark using e.g. perf, enable this definition to remove_file extra noise
+ * When running the benchmark using e.g. perf, enable this definition to remove extra noise
  * from calculating and printing the results.
  *
  * To see shared cached lines :
  * perf c2c record -g --call-graph dwarf,8192  ./benchmark_quill_call_site_latency
  * perf c2c report -NN -g --call-graph -c pid,iaddr --stdio
+ * perf c2c report -NN -g --call-graph -d lcl --stdio
  */
 // #define PERF_ENABLED
 
 #define THREAD_LIST_COUNT                                                                          \
-  std::vector<int32_t> { 1, 4 }
+  std::vector<uint16_t> { 1, 4 }
 
 #define MESSAGES_PER_ITERATION                                                                     \
   std::size_t { 20 }
 
 #define ITERATIONS                                                                                 \
-  std::size_t { 100000 }
+  std::size_t { 10000 }
 
 /**
  * Min-Max wait duration between each iteration - This lets the backend thread catch up
