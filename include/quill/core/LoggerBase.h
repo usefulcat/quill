@@ -33,7 +33,7 @@ class BacktraceStorage;
 class LoggerManager;
 
 /***/
-class LoggerBase
+class alignas(CACHE_LINE_SIZE) LoggerBase
 {
 public:
   /***/
@@ -54,6 +54,9 @@ public:
 
     this->sinks = static_cast<std::vector<std::shared_ptr<Sink>>&&>(sinks);
   }
+
+  void* operator new(size_t i) { return aligned_alloc(i, detail::CACHE_LINE_SIZE); }
+  void operator delete(void* p) { std::free(p); }
 
   /***/
   LoggerBase(LoggerBase const&) = delete;
@@ -160,6 +163,14 @@ public:
 protected:
   friend class BackendWorker;
   friend class LoggerManager;
+
+  static void* aligned_alloc(size_t size, const size_t align) {
+    // Note: rounding is necessary. size parameter must be an
+    // integral multiple of align.
+    size += (size + (align - 1)) % align;
+    assert((size % align) == 0);
+    return std::aligned_alloc(align, size);
+  }
 
   static inline QUILL_THREAD_LOCAL ThreadContext* thread_context = nullptr; /* Set and accessed by the frontend */
   std::shared_ptr<PatternFormatter> pattern_formatter; /* The backend thread will set this once, we never access it on the frontend */
