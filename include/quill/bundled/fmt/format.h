@@ -692,6 +692,9 @@ inline auto compute_width(basic_string_view<Char> s) -> size_t {
 
 // Computes approximate display width of a UTF-8 string.
 FMTQUILL_CONSTEXPR inline auto compute_width(string_view s) -> size_t {
+#if FMTQUILL_ASCII_ONLY
+  return s.size();
+#else
   size_t num_code_points = 0;
   // It is not a lambda for compatibility with C++14.
   struct count_code_points {
@@ -723,6 +726,7 @@ FMTQUILL_CONSTEXPR inline auto compute_width(string_view s) -> size_t {
   // We could avoid branches by using utf8_decode directly.
   for_each_codepoint(s, count_code_points{&num_code_points});
   return num_code_points;
+#endif
 }
 
 template <typename Char>
