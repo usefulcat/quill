@@ -165,11 +165,20 @@ protected:
   friend class LoggerManager;
 
   static void* aligned_alloc(size_t size, const size_t align) {
-    // Note: rounding is necessary. size parameter must be an
-    // integral multiple of align.
-    size += (size + (align - 1)) % align;
-    assert((size % align) == 0);
-    return std::aligned_alloc(align, size);
+    if (align != 0) {
+      // Note: rounding is necessary. size parameter must be an
+      // integral multiple of align.
+      if (size < align) {
+        size = align;
+      }
+      if (size % align != 0) {
+        size += align - (size % align);
+      }
+      assert((size % align) == 0);
+      return std::aligned_alloc(align, size);
+    } else {
+      return std::malloc(size);
+    }
   }
 
   static inline QUILL_THREAD_LOCAL ThreadContext* thread_context = nullptr; /* Set and accessed by the frontend */
