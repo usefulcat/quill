@@ -80,6 +80,11 @@
 - [v1.1.0](#v110)
 - [v1.0.0](#v100)
 
+## TBD
+
+- Suppress `-Wredundant-decls` warning in GCC builds.
+- Avoid adding `-Wno-gnu-zero-variadic-macro-arguments` for GCC in CMake.
+
 ## v7.5.0
 
 - In previous versions, logging on Windows automatically included `windows.h` in all components. The frontend will no
