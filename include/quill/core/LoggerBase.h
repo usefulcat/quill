@@ -56,8 +56,10 @@ public:
     this->sinks = static_cast<std::vector<std::shared_ptr<Sink>>&&>(sinks);
   }
 
+#if __cplusplus >= 201700
   void* operator new(size_t i) { return aligned_alloc(i, detail::CACHE_LINE_SIZE); }
   void operator delete(void* p) { std::free(p); }
+#endif
 
   /***/
   LoggerBase(LoggerBase const&) = delete;
@@ -165,6 +167,7 @@ protected:
   friend class BackendWorker;
   friend class LoggerManager;
 
+#if __cplusplus >= 201700
   static void* aligned_alloc(size_t size, const size_t align) {
     if (align != 0) {
       // Note: rounding is necessary. size parameter must be an
@@ -181,6 +184,7 @@ protected:
       return std::malloc(size);
     }
   }
+#endif
 
   static inline QUILL_THREAD_LOCAL ThreadContext* thread_context = nullptr; /* Set and accessed by the frontend */
   std::shared_ptr<PatternFormatter> pattern_formatter; /* The backend thread will set this once, we never access it on the frontend */
