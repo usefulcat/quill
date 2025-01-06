@@ -56,7 +56,7 @@ public:
     this->sinks = static_cast<std::vector<std::shared_ptr<Sink>>&&>(sinks);
   }
 
-#if __cplusplus >= 201700 and not defined(_WIN32)
+#if __cplusplus >= 201700 && !defined(_WIN32) && !defined(_MSC_VER)
   void* operator new(size_t i) { return aligned_alloc(i, detail::CACHE_LINE_SIZE); }
   void operator delete(void* p) { std::free(p); }
 #endif
@@ -167,7 +167,7 @@ protected:
   friend class BackendWorker;
   friend class LoggerManager;
 
-#if __cplusplus >= 201700 and not defined(_WIN32)
+#if __cplusplus >= 201700 && !defined(_WIN32) && !defined(_MSC_VER)
   static void* aligned_alloc(size_t size, const size_t align) {
     if (align != 0) {
       // Note: rounding is necessary. size parameter must be an
