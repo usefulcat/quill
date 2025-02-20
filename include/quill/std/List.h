@@ -11,8 +11,8 @@
 #include "quill/core/DynamicFormatArgStore.h"
 #include "quill/core/InlinedVector.h"
 
-#include "quill/bundled/fmt/ranges.h"
 #include "quill/bundled/fmt/format.h"
+#include "quill/bundled/fmt/ranges.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -93,7 +93,9 @@ struct Codec<std::list<T, Allocator>>
       // Read the size
       size_t const number_of_elements = Codec<size_t>::decode_arg(buffer);
 
-      std::list<T, Allocator> arg;
+      using ReturnType = decltype(Codec<T>::decode_arg(buffer));
+      using ReboundAllocator = typename std::allocator_traits<Allocator>::template rebind_alloc<ReturnType>;
+      std::list<ReturnType, ReboundAllocator> arg;
 
       for (size_t i = 0; i < number_of_elements; ++i)
       {

@@ -25,7 +25,7 @@ namespace detail
 /**
  * Provides access to common collection class that are used by both the frontend and the backend
  * components of the logging system
- * There should only be only active active instance of this class which is achieved by the
+ * There should only be only active instance of this class which is achieved by the
  * LogSystemManagerSingleton
  */
 class BackendManager

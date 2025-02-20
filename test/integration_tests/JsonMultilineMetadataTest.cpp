@@ -5,7 +5,7 @@
 #include "quill/Frontend.h"
 #include "quill/LogMacros.h"
 #include "quill/sinks/FileSink.h"
-#include "quill/sinks/JsonFileSink.h"
+#include "quill/sinks/JsonSink.h"
 
 #include <cstdio>
 #include <string>
@@ -41,7 +41,7 @@ TEST_CASE("json_multi_line_metadata")
     json_filename,
     []()
     {
-      JsonFileSinkConfig cfg;
+      FileSinkConfig cfg;
       cfg.set_open_mode('w');
       return cfg;
     }(),

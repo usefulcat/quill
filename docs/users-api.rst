@@ -22,7 +22,7 @@ BackendTscClock Class
    :members:
 
 SignalHandler Options
----------------
+---------------------
 
 .. doxygenstruct:: SignalHandlerOptions
    :members:
@@ -86,16 +86,16 @@ FileSink Class
 .. doxygenclass:: FileSink
    :members:
 
+RotatingSink Class
+----------------------------
+
+.. doxygenclass:: RotatingSink
+   :members:
+
 RotatingFileSinkConfig Class
 ----------------------------
 
 .. doxygenclass:: RotatingFileSinkConfig
-   :members:
-
-RotatingFileSink Class
-----------------------------
-
-.. doxygenclass:: RotatingFileSink
    :members:
 
 JsonFileSink Class

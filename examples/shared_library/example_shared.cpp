@@ -21,11 +21,13 @@ int main()
 {
   setup_quill();
 
+  assert(global_logger_a == get_logger("root"));
+
   // Change the LogLevel to print everything
   global_logger_a->set_log_level(quill::LogLevel::TraceL3);
 
-  std::string s {"string"};
-  std::string_view sv {"string_view"};
+  std::string s{"string"};
+  std::string_view sv{"string_view"};
 
   LOG_TRACE_L3(global_logger_a, "This is a log trace l3 example {}", 1);
   LOG_TRACE_L2(global_logger_a, "This is a log trace l2 example {} {}", 2, 2.3);

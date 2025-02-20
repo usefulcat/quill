@@ -6,7 +6,7 @@
 #include "quill/LogMacros.h"
 #include "quill/bundled/fmt/format.h"
 #include "quill/bundled/fmt/ostream.h"
-#include "quill/sinks/JsonFileSink.h"
+#include "quill/sinks/JsonSink.h"
 
 #include <cstdio>
 #include <optional>
@@ -70,7 +70,7 @@ TEST_CASE("json_file_logging")
           json_filename,
           []()
           {
-            JsonFileSinkConfig cfg;
+            FileSinkConfig cfg;
             cfg.set_open_mode('w');
             return cfg;
           }(),

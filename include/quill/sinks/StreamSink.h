@@ -126,7 +126,7 @@ public:
    */
   QUILL_ATTRIBUTE_HOT void write_log(MacroMetadata const* /* log_metadata */,
                                      uint64_t /* log_timestamp */, std::string_view /* thread_id */,
-                                             std::string_view /* thread_name */, std::string const& /* process_id */,
+                                     std::string_view /* thread_name */, std::string const& /* process_id */,
                                      std::string_view /* logger_name */, LogLevel /* log_level */,
                                      std::string_view /* log_level_description */,
                                      std::string_view /* log_level_short_code */,
@@ -163,8 +163,7 @@ public:
       return;
     }
 
-    _write_occurred = false;
-    fflush(_file);
+    flush();
   }
 
   /**
@@ -196,6 +195,15 @@ protected:
       QUILL_THROW(QuillError{std::string{"fwrite failed errno: "} + std::to_string(errno) +
                              " error: " + strerror(errno)});
     }
+  }
+
+  /**
+   * Flushes the stream
+   */
+  QUILL_ATTRIBUTE_HOT void flush()
+  {
+    _write_occurred = false;
+    fflush(_file);
   }
 
 protected:

@@ -74,7 +74,7 @@ applications where every microsecond counts.
 - **Extensive Documentation**: Comprehensive guides and examples available.
 - **Community-Driven**: Open to contributions, feedback, and feature requests.
 
-Try it on [Compiler Explorer](https://godbolt.org/z/zEsxsxcoq)
+Try it on [Compiler Explorer](https://godbolt.org/z/rEvs4nov6)
 
 ## ⏩ Quick Start
 
@@ -375,6 +375,8 @@ generates smaller binary log files. However, the binary logs necessitate offline
 can be less convenient.
 
 ## 🧩 Usage
+
+Also, see the [Quick Start Guide](https://quillcpp.readthedocs.io/en/latest/quick_start.html) for a brief introduction.
 
 ```c++
 #include "quill/Backend.h"

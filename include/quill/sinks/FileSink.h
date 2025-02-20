@@ -125,14 +125,6 @@ public:
    */
   QUILL_ATTRIBUTE_COLD void set_fsync_enabled(bool value) { _fsync_enabled = value; }
 
-  [[deprecated(
-    "This function is deprecated and will be removed in the next version. Use set_fsync_enabled() "
-    "instead.")]]
-  QUILL_ATTRIBUTE_COLD void set_do_fsync(bool value)
-  {
-    _fsync_enabled = value;
-  }
-
   /**
    * @brief Sets the open mode for the file.
    * Valid options for the open mode are 'a' or 'w'. The default value is 'a'.
@@ -222,6 +214,7 @@ public:
    * @param config Configuration for the FileSink.
    * @param file_event_notifier Notifies on file events.
    * @param do_fopen If false, the file will not be opened.
+   * @param start_time start time
    */
   explicit FileSink(fs::path const& filename, FileSinkConfig const& config = FileSinkConfig{},
                     FileEventNotifier file_event_notifier = FileEventNotifier{}, bool do_fopen = true,
@@ -429,7 +422,9 @@ private:
    * Get the filename with appended date and/or time.
    * @param filename Path to the file.
    * @param append_to_filename_option Append option.
+   * @param append_filename_format_pattern Append filename format option.
    * @param time_zone Timezone to use.
+   * @param timestamp timestamp
    * @return Updated filename.
    */
   QUILL_NODISCARD static fs::path _get_updated_filename_with_appended_datetime(
@@ -452,7 +447,7 @@ private:
     return fs::path{};
   }
 
-private:
+protected:
   FileSinkConfig _config;
   std::chrono::steady_clock::time_point _last_fsync_timestamp{};
   std::unique_ptr<char[]> _write_buffer;

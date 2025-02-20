@@ -3,7 +3,7 @@
 #include "quill/LogMacros.h"
 #include "quill/Logger.h"
 #include "quill/sinks/ConsoleSink.h"
-#include "quill/sinks/JsonFileSink.h"
+#include "quill/sinks/JsonSink.h"
 
 #include <utility>
 
@@ -29,7 +29,7 @@ int main()
     "example_json.log",
     []()
     {
-      quill::JsonFileSinkConfig cfg;
+      quill::FileSinkConfig cfg;
       cfg.set_open_mode('w');
       cfg.set_filename_append_option(quill::FilenameAppendOption::None);
       return cfg;

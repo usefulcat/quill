@@ -77,7 +77,7 @@ public:
                                                     integer_type reader_store_percent = 5)
     : _capacity(next_power_of_two(capacity)),
       _mask(_capacity - 1),
-      _bytes_per_batch(static_cast<integer_type>(_capacity * static_cast<double>(reader_store_percent) / 100.0)),
+      _bytes_per_batch(static_cast<integer_type>(static_cast<double>(_capacity * reader_store_percent) / 100.0)),
       _storage(static_cast<std::byte*>(_alloc_aligned(2ull * static_cast<uint64_t>(_capacity),
                                                       CACHE_LINE_ALIGNED, huges_pages_enabled))),
       _huge_pages_enabled(huges_pages_enabled)
@@ -229,6 +229,7 @@ private:
   /**
    * align a pointer to the given alignment
    * @param pointer a pointer the object
+   * @param alignment a pointer the object
    * @return an aligned pointer for the given object
    */
   QUILL_NODISCARD static std::byte* _align_pointer(void* pointer, size_t alignment) noexcept

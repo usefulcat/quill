@@ -1,3 +1,7 @@
+- [v8.2.0](#v820)
+- [v8.1.1](#v811)
+- [v8.1.0](#v810)
+- [v8.0.0](#v800)
 - [v7.5.0](#v750)
 - [v7.4.0](#v740)
 - [v7.3.0](#v730)
@@ -80,10 +84,81 @@
 - [v1.1.0](#v110)
 - [v1.0.0](#v100)
 
-## TBD
+## v8.2.0
 
+- Raised minimum `CMake` required version from `3.8` to `3.10` to avoid deprecation warnings.
+- Fixed warnings: `-Wimplicit-int-float-conversion`, `-Wfloat-equal`, and `-Wdocumentation`.
+- Added `DeferredFormatCodec` and `DirectFormatCodec` for easier logging of user-defined types and smoother migration
+  from pre-`v4` versions. Previously, users had to define a custom `Codec` for every non-trivially copyable user-defined
+  type they wanted to log.
+  - `DeferredFormatCodec` now supports both trivially and non-trivially copyable types:
+    - For trivially copyable types, it behaves the same as `TriviallyCopyableTypeCodec`.
+    - For non-trivially copyable types, it works similarly to pre-`v4` by taking a copy of the object using the copy
+      constructor and placement new.
+  - `DirectFormatCodec` formats the object immediately in the hot path, serving as a shortcut to explicitly formatting
+    the object when logging.
+  - For advanced use cases, a custom `Codec` can still be defined for finer control over encoding/decoding.
+
+  See:
+  - [DeferredFormatCodec Usage](https://github.com/odygrd/quill/blob/master/examples/user_defined_types_logging_deferred_format.cpp)
+  - [DirectFormatCodec Usage](https://github.com/odygrd/quill/blob/master/examples/user_defined_types_logging_direct_format.cpp)
+  - [Documentation](https://quillcpp.readthedocs.io/en/latest/cheat_sheet.html#logging-user-defined-types)
+
+- Added codec support for C-style arrays of user-defined types in `std/Array.h`
+- Marked `TriviallyCopyableTypeCodec` as deprecated. `DeferredFormatCodec` should be used instead, requiring no code
+  changes.
+
+## v8.1.1
+
+- Updated bazel `rules_cc` to `0.1.1` ([#664](https://github.com/odygrd/quill/issues/664))
+
+## v8.1.0
+
+- Updated bundled `libfmt` to `11.1.3`
+- Suppressed clang-19 warning when building the tests with C++17. ([#646](https://github.com/odygrd/quill/issues/646))
+- Fixed windows linkage error when shared library is used.
+- Fixed redefinition of `struct fmt_detail::time_zone` error ([#649](https://github.com/odygrd/quill/issues/649))
+
+## v8.0.0
+
+- Unified `JsonFileSink.h` and `JsonConsoleSink.h` into a single header, `JsonSink.h`, with both classes now sharing a
+  common implementation
+- Users can now inherit from `JsonFileSink` or `JsonConsoleSink` and override the `generate_json_message(...)` function
+  to implement their own custom JSON log formats
+- Removed `JsonFileSinkConfig`. Please rename it to `FileSinkConfig`, which retains the same API and is fully
+  compatible.
+- Added `RotatingJsonFileSink`. Functions like `RotatingFileSink`, but specifically designed for rotating JSON log
+  files. ([#637](https://github.com/odygrd/quill/issues/637))
+- Simplified `ConsoleSink` by applying ANSI colour codes universally across all platforms, including Windows. The
+  previous Windows-specific implementation has been removed. Note that `quill::ConsoleColours` has been replaced with
+  `quill::ConsoleSink::Colours`, and `quill::ConsoleColours::ColourMode` has been renamed to
+  `quill::ConsoleSink::ColourMode`.
+- Changed class member visibility in `FileSink`, `JsonSink`, and `RotatingSink` from private to protected, enabling
+  easier customization through inheritance for user-defined implementations.
+- Added a new `sink_min_flush_interval` option in `BackendOptions`, which specifies the minimum time interval (in
+  milliseconds) before the backend thread flushes the output buffers calling `flush_sink()` for all sinks, with a
+  default value of 200ms; The backend thread ensures sinks aren't flushed more frequently than this interval, while
+  explicit calls to `logger->flush_log()` trigger an immediate flush, and flushing may occur less frequently if the
+  backend thread is busy, with this setting applying globally to all
+  sinks. Setting this value to 0 disables the feature. ([#641](https://github.com/odygrd/quill/issues/641))
+- Updated bundled `libfmt` to `11.1.2`
+- Added a `StopWatch` utility for easy logging of elapsed time. It can log the time elapsed since construction in
+  various formats. You can use either `quill::StopWatchTsc` for high-resolution TSC-based timing or
+  `quill::StopWatchChrono` for standard std::chrono-based timing. ([#640](https://github.com/odygrd/quill/issues/640))
+
+  For example:
+  ```c++
+    #include "quill/StopWatch.h"
+
+    quill::StopWatchTsc swt;
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    LOG_INFO(logger, "After 1s, elapsed: {:.6}s", swt); // => After 1s, elapsed: 1.00849s
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    LOG_INFO(logger, "After 500ms, elapsed: {}s", swt); // => After 500ms, elapsed: 1.521880274s
+    LOG_INFO(logger, "elapsed: {}", swt.elapsed_as<std::chrono::nanoseconds>()); // => elapsed: 1521807324ns
+  ```
 - Suppress `-Wredundant-decls` warning in GCC builds.
-- Avoid adding `-Wno-gnu-zero-variadic-macro-arguments` for GCC in CMake.
+- Remove `-Wno-gnu-zero-variadic-macro-arguments` for GCC in CMake.
 
 ## v7.5.0
 
@@ -112,7 +187,7 @@
 - Fixed a build issue when compiling with `-fno-rtti`. This ensures compatibility with projects that disable
   `RTTI`. ([#604](https://github.com/odygrd/quill/issues/604))
 - Fixed an incorrectly triggered assertion in debug builds when `BackendOptions::log_timestamp_ordering_grace_period` is
-  set to 0. ([#605](https://github.com/odygrd/quill/issues/605))
+  set to 0 ([#605](https://github.com/odygrd/quill/issues/605))
 - Fixed a compile-time error in `CsvWriter` that occurred when passing a custom `FrontendOptions` type as a template
   parameter. ([#609](https://github.com/odygrd/quill/issues/609))
 - Added accessors to `Logger` for sinks, user clock source, clock source type, and pattern formatter options that can be
@@ -125,6 +200,7 @@
   ```cpp
     quill::Frontend::create_or_get_sink<quill::ConsoleSink>(
       "sink_id_1", quill::ConsoleColours::ColourMode::Automatic);
+   ```
 
 ## v7.3.0
 

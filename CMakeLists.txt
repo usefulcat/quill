@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.10)
 project(quill)
 
 #-------------------------------------------------------------------------------------------------------
@@ -145,6 +145,7 @@ endif ()
 
 if (QUILL_BUILD_EXAMPLES)
     add_subdirectory(examples)
+    add_subdirectory(docs/examples)
 endif ()
 
 if (QUILL_BUILD_BENCHMARKS)
@@ -216,10 +217,11 @@ set(HEADER_FILES
 
         include/quill/sinks/ConsoleSink.h
         include/quill/sinks/FileSink.h
-        include/quill/sinks/JsonConsoleSink.h
-        include/quill/sinks/JsonFileSink.h
+        include/quill/sinks/JsonSink.h
         include/quill/sinks/NullSink.h
         include/quill/sinks/RotatingFileSink.h
+        include/quill/sinks/RotatingJsonFileSink.h
+        include/quill/sinks/RotatingSink.h
         include/quill/sinks/Sink.h
         include/quill/sinks/StreamSink.h
 
@@ -242,9 +244,12 @@ set(HEADER_FILES
         include/quill/Backend.h
         include/quill/BackendTscClock.h
         include/quill/CsvWriter.h
+        include/quill/DeferredFormatCodec.h
+        include/quill/DirectFormatCodec.h
         include/quill/Frontend.h
         include/quill/Logger.h
         include/quill/LogMacros.h
+        include/quill/StopWatch.h
         include/quill/StringRef.h
         include/quill/TriviallyCopyableCodec.h
         include/quill/UserClockSource.h
@@ -385,5 +390,9 @@ if (QUILL_MASTER_PROJECT OR QUILL_ENABLE_INSTALL)
 endif ()
 
 if (QUILL_DOCS_GEN)
+    if (NOT QUILL_BUILD_EXAMPLES)
+        message(FATAL_ERROR "QUILL_DOCS_GEN requires QUILL_BUILD_EXAMPLES to be ON. Please enable QUILL_BUILD_EXAMPLES.")
+    endif()
+
     add_subdirectory(docs)
 endif ()
