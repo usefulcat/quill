@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.12...4.0)
 project(quill)
 
 #-------------------------------------------------------------------------------------------------------
@@ -32,11 +32,6 @@ option(QUILL_USE_VALGRIND "Use Valgrind as the default memory checking tool in C
 option(QUILL_ENABLE_INSTALL "Enable the CMake install target when Quill is not the master project." OFF)
 
 option(QUILL_DOCS_GEN "Generate documentation during the build process." OFF)
-
-#-------------------------------------------------------------------------------------------------------
-# Use newer policies if possible, up to most recent tested version of CMake.
-#-------------------------------------------------------------------------------------------------------
-cmake_policy(VERSION ${CMAKE_MAJOR_VERSION}.${CMAKE_MINOR_VERSION})
 
 #-------------------------------------------------------------------------------------------------------
 # Determine if quill is built as a subproject (using add_subdirectory) or if it is the master project.
@@ -192,6 +187,7 @@ set(HEADER_FILES
 
         include/quill/core/Attributes.h
         include/quill/core/BoundedSPSCQueue.h
+        include/quill/core/ChronoTimeUtils.h
         include/quill/core/Common.h
         include/quill/core/DynamicFormatArgStore.h
         include/quill/core/Codec.h

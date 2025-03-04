@@ -1,19 +1,29 @@
 <div align="center">
-  <br>
-  <img src="docs/logo.png" alt="logo" width="200" height="auto" />
-  <h1>Quill</h1>
+  <!--
+  <meta name="description" content="C++ logging library. High-performance, asynchronous logging for low-latency real-time applications.">
+  <meta name="keywords" content="C++, logging library, asynchronous logging, high performance, low latency">
+  -->
 
+  <br>
+  <img src="docs/logo.png" alt="Quill C++ Logging Library" width="200" height="auto" />
+  <h1>Quill</h1>
   <p><b>Asynchronous Low Latency C++ Logging Library</b></p>
 
   <div>
-    <a href="https://github.com/odygrd/quill/actions?query=workflow%3Alinux">
-      <img src="https://img.shields.io/github/actions/workflow/status/odygrd/quill/linux.yml?branch=master&label=linux&logo=linux&style=flat-square" alt="linux-ci" />
+    <a href="https://github.com/odygrd/quill/actions?query=workflow%3Afedora">
+      <img src="https://img.shields.io/github/actions/workflow/status/odygrd/quill/fedora.yml?branch=master&label=Fedora&style=flat-square&logo=fedora" alt="fedora-ci" />
+    </a>
+    <a href="https://github.com/odygrd/quill/actions?query=workflow%3Aubuntu">
+      <img src="https://img.shields.io/github/actions/workflow/status/odygrd/quill/ubuntu.yml?branch=master&label=Ubuntu&style=flat-square&logo=ubuntu" alt="ubuntu-ci" />
+    </a>
+    <a href="https://github.com/odygrd/quill/actions?query=workflow%3Absd">
+      <img src="https://img.shields.io/github/actions/workflow/status/odygrd/quill/bsd.yml?branch=master&label=BSD&style=flat-square&logo=openbsd" alt="bsd-ci" />
     </a>
     <a href="https://github.com/odygrd/quill/actions?query=workflow%3Amacos">
-      <img src="https://img.shields.io/github/actions/workflow/status/odygrd/quill/macos.yml?branch=master&label=macos&logo=apple&logoColor=white&style=flat-square" alt="macos-ci" />
+      <img src="https://img.shields.io/github/actions/workflow/status/odygrd/quill/macos.yml?branch=master&label=macOS&logoColor=white&style=flat-square&logo=apple" alt="macos-ci" />
     </a>
     <a href="https://github.com/odygrd/quill/actions?query=workflow%3Awindows">
-      <img src="https://img.shields.io/github/actions/workflow/status/odygrd/quill/windows.yml?branch=master&label=windows&logo=windows&logoColor=blue&style=flat-square" alt="windows-ci" />
+      <img src="https://img.shields.io/github/actions/workflow/status/odygrd/quill/windows.yml?branch=master&label=Windows&logoColor=blue&style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGhlaWdodD0iODgiIHdpZHRoPSI4OCIgeG1sbnM6dj0iaHR0cHM6Ly92ZWN0YS5pby9uYW5vIj48cGF0aCBkPSJNMCAxMi40MDJsMzUuNjg3LTQuODYuMDE2IDM0LjQyMy0zNS42Ny4yMDN6bTM1LjY3IDMzLjUyOWwuMDI4IDM0LjQ1M0wuMDI4IDc1LjQ4LjAyNiA0NS43em00LjMyNi0zOS4wMjVMODcuMzE0IDB2NDEuNTI3bC00Ny4zMTguMzc2em00Ny4zMjkgMzkuMzQ5bC0uMDExIDQxLjM0LTQ3LjMxOC02LjY3OC0uMDY2LTM0LjczOXoiIGZpbGw9IiMwMGFkZWYiLz48L3N2Zz4=" alt="windows-ci" />
     </a>
   </div>
 
@@ -26,7 +36,7 @@
     </a>
     <a href="https://www.codefactor.io/repository/github/odygrd/quill">
       <img src="https://img.shields.io/codefactor/grade/github/odygrd/quill?logo=codefactor&style=flat-square" alt="CodeFactor" />
-     </a>
+    </a>
   </div>
 
   <div>
@@ -38,19 +48,20 @@
     </a>
   </div>
 
-<h4>
+  <h4>
     <a href="https://quillcpp.readthedocs.io" title="Explore the full documentation">📚 Documentation</a>
-  <span> · </span>
+    <span> · </span>
     <a href="https://quillcpp.readthedocs.io/en/latest/cheat_sheet.html" title="Quick reference for common tasks">⚡ Cheat Sheet</a>
-  <span> · </span>
+    <span> · </span>
     <a href="https://github.com/odygrd/quill/issues/new?assignees=&labels=&projects=&template=bug-report.md&title=" title="Report a bug or issue">🐛 Report Bug</a>
-  <span> · </span>
+    <span> · </span>
     <a href="https://github.com/odygrd/quill/issues/new?assignees=&labels=&projects=&template=feature_request.md&title=">💡 Request Feature</a>
   </h4>
 
-<div align="center"><img src="docs/quill_demo.gif" width="75%" ></div>
-
+  <div align="center"><img src="docs/quill_demo.gif" alt="Logging Demo" width="75%" /></div>
 </div>
+
+---
 
 ## 🧭 Table of Contents
 
@@ -63,10 +74,11 @@
 - [Caveats](#-caveats)
 - [License](#-license)
 
+---
+
 ## ✨ Introduction
 
-Quill is a high-performance asynchronous logging library. It is particularly suited for performance-critical
-applications where every microsecond counts.
+**Quill** is a **high-performance asynchronous logging library** written in **C++**. It is designed for low-latency, performance-critical applications where every microsecond counts.
 
 - **Performance-Focused**: Quill consistently outperforms many popular logging libraries.
 - **Feature-Rich**: Packed with advanced features to meet diverse logging needs.
@@ -74,7 +86,9 @@ applications where every microsecond counts.
 - **Extensive Documentation**: Comprehensive guides and examples available.
 - **Community-Driven**: Open to contributions, feedback, and feature requests.
 
-Try it on [Compiler Explorer](https://godbolt.org/z/rEvs4nov6)
+Try it on [Compiler Explorer](https://godbolt.org/z/szncr8c8d)
+
+---
 
 ## ⏩ Quick Start
 
@@ -118,6 +132,8 @@ int main()
 }
 ```
 
+---
+
 ## 🎯 Features
 
 - **High-Performance**: Ultra-low latency performance. View [Benchmarks](http://github.com/odygrd/quill#performance)
@@ -146,6 +162,8 @@ int main()
 - **Exception-Free Option**: Configurable builds with or without exception handling.
 - **Clean Codebase**: Maintained to high standards, warning-free even at strict levels.
 - **Type-Safe API**: Built on [{fmt}](http://github.com/fmtlib/fmt) library.
+
+---
 
 ## 🚀 Performance
 
@@ -374,6 +392,8 @@ If Quill were not available, MS BinLog would be a strong alternative. It deliver
 generates smaller binary log files. However, the binary logs necessitate offline processing with additional tools, which
 can be less convenient.
 
+---
+
 ## 🧩 Usage
 
 Also, see the [Quick Start Guide](https://quillcpp.readthedocs.io/en/latest/quick_start.html) for a brief introduction.
@@ -563,6 +583,8 @@ For manual setup, add Quill to your `BUILD.bazel` file like this:
 cc_binary(name = "app", srcs = ["main.cpp"], deps = ["//quill_path:quill"])
 ```
 
+---
+
 ## 📐 Design
 
 ### Frontend (caller-thread)
@@ -587,6 +609,8 @@ Consumes each message from the SPSC queue, retrieves all the necessary informati
 Subsequently, forwards the log message to all Sinks associated with the Logger.
 
 ![design.jpg](docs%2Fdesign.jpg)
+
+---
 
 ## 🚨 Caveats
 
@@ -637,6 +661,8 @@ int main()
   }
 }
 ```
+
+---
 
 ## 📝 License
 

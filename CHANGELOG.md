@@ -1,3 +1,4 @@
+- [v8.3.0](#v830)
 - [v8.2.0](#v820)
 - [v8.1.1](#v811)
 - [v8.1.0](#v810)
@@ -84,13 +85,35 @@
 - [v1.1.0](#v110)
 - [v1.0.0](#v100)
 
+## v8.3.0
+
+- Updated bundled `libfmt` to `11.1.4`.
+- Fixed BSD builds. ([#688](https://github.com/odygrd/quill/issues/688))
+- On Linux, setting a long backend thread name now truncates it instead of
+  failing. ([#691](https://github.com/odygrd/quill/issues/691))
+- Added a Windows-specific check to detect duplicate backend worker threads caused by inconsistent linkage (e.g., mixing
+  static and shared libraries). ([#687](https://github.com/odygrd/quill/discussions/687#discussioncomment-12349621))
+- CMake improvements: switched to range syntax for minimum required version and bumped minimum required CMake version to
+  `3.12`. ([#686](https://github.com/odygrd/quill/issues/686))
+
 ## v8.2.0
 
-- Raised minimum `CMake` required version from `3.8` to `3.10` to avoid deprecation warnings.
-- Fixed warnings: `-Wimplicit-int-float-conversion`, `-Wfloat-equal`, and `-Wdocumentation`.
 - Added `DeferredFormatCodec` and `DirectFormatCodec` for easier logging of user-defined types and smoother migration
   from pre-`v4` versions. Previously, users had to define a custom `Codec` for every non-trivially copyable user-defined
   type they wanted to log.
+
+  ```c++
+  template <>
+  struct quill::Codec<UserTypeA> : quill::DeferredFormatCodec<UserTypeA>
+  {
+  };
+  
+  template <>
+  struct quill::Codec<UserTypeB> : quill::DirectFormatCodec<UserTypeB>
+  {
+  };
+  ```
+
   - `DeferredFormatCodec` now supports both trivially and non-trivially copyable types:
     - For trivially copyable types, it behaves the same as `TriviallyCopyableTypeCodec`.
     - For non-trivially copyable types, it works similarly to pre-`v4` by taking a copy of the object using the copy
@@ -105,8 +128,10 @@
   - [Documentation](https://quillcpp.readthedocs.io/en/latest/cheat_sheet.html#logging-user-defined-types)
 
 - Added codec support for C-style arrays of user-defined types in `std/Array.h`
-- Marked `TriviallyCopyableTypeCodec` as deprecated. `DeferredFormatCodec` should be used instead, requiring no code
+- Fixed warnings: `-Wimplicit-int-float-conversion`, `-Wfloat-equal`, and `-Wdocumentation`.
+- Marked `TriviallyCopyableTypeCodec` as deprecated. `DeferredFormatCodec` should be used instead, requiring no further
   changes.
+- Raised minimum `CMake` required version from `3.8` to `3.10` to avoid deprecation warnings.
 
 ## v8.1.1
 
