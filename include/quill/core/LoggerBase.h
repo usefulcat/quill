@@ -34,7 +34,7 @@ class BacktraceStorage;
 class LoggerManager;
 
 /***/
-class alignas(CACHE_LINE_SIZE) LoggerBase
+class alignas(QUILL_CACHE_LINE_SIZE) LoggerBase
 {
 public:
   /***/
@@ -57,7 +57,7 @@ public:
   }
 
 #if __cplusplus >= 201700 && !defined(_WIN32) && !defined(_MSC_VER)
-  void* operator new(size_t i) { return aligned_alloc(i, detail::CACHE_LINE_SIZE); }
+  void* operator new(size_t i) { return aligned_alloc(i, QUILL_CACHE_LINE_SIZE); }
   void operator delete(void* p) { std::free(p); }
 #endif
 
