@@ -1,4 +1,10 @@
-- [v8.3.0](#v830)
+- TBD
+- [v10.0.1](#v1001)
+- [v10.0.0](#v1000)
+- [v9.0.3](#v903)
+- [v9.0.2](#v902)
+- [v9.0.1](#v901)
+- [v9.0.0](#v900)
 - [v8.2.0](#v820)
 - [v8.1.1](#v811)
 - [v8.1.0](#v810)
@@ -85,16 +91,281 @@
 - [v1.1.0](#v110)
 - [v1.0.0](#v100)
 
-## v8.3.0
+## TBD
+
+- Added unique prefixes to internal macro variables to prevent conflicts with user variable names in the same scope.
+
+## v10.0.1
+
+- Fixed PatternFormatter test to work with any repository name instead of hardcoded `quill` ([#795](https://github.com/odygrd/quill/issues/795))
+- Fixed Windows compiler warnings when clang-cl >= 19 is used
+
+## v10.0.0
+
+### New Features
+
+- There is a new macro-free mode that allows logging without macros. You have two options: either
+  `#include "quill/LogMacros.h"` or `#include "quill/LogFunctions.h"`. The macro mode still remains the recommended and
+  main method for logging. The new macro-free log has higher overhead than using macros. To use the macro-free mode, for
+  example:
+
+  ```cpp
+  quill::debug(logger, "A {} message with number {}", "test", 123);
+  ```
+
+  See macro-free mode documentation [here](https://quillcpp.readthedocs.io/en/latest/macro_free_mode.html) for details.
+
+- Added `BinaryDataDeferredFormatCodec` for efficient binary data logging. This codec allows efficient logging of
+  variable-sized binary data by copying the raw bytes on the hot path and deferring the formatting to the backend
+  thread. This is particularly useful for logging binary protocol messages (like SBE or custom binary formats),
+  network packets, and raw binary data without impacting application performance. See the
+  example [sbe_logging](https://github.com/odygrd/quill/blob/master/examples/sbe_binary_data/sbe_logging.cpp) and
+  [binary_protocol_logging](https://github.com/odygrd/quill/blob/master/examples/binary_protocol_logging.cpp)
+  for details.
+  For documentation, see [here](https://quillcpp.readthedocs.io/en/latest/binary_protocols.html).
+
+- The immediate flush feature has been enhanced to support interval-based flushing and moved to runtime. This feature
+  helps with debugging by ensuring log statements are flushed to the sink, blocking the caller
+  thread. ([#660](https://github.com/odygrd/quill/issues/660))
+  
+- Added `source_location_path_strip_prefix` option in `PatternFormatterOptions` to customize the display of the
+  `%(source_location)` attribute of `PatternFormatter`. When set, any paths that contain this prefix will have
+  the prefix and everything before it stripped from the displayed path. For example, with prefix "projects",
+  a source location like "/home/user/projects/app/main.cpp:5" would be displayed as "app/main.cpp:
+  5". ([#772](https://github.com/odygrd/quill/issues/772))
+
+- Added `source_location_remove_relative_paths` option in `PatternFormatterOptions` to remove relative path
+  components from the `%(source_location)` attribute of `PatternFormatter`. When enabled, relative path
+  components like "../" are processed and removed, simplifying paths from `__FILE__` which might contain
+  relative paths like "../../../test/main.cpp". ([#778](https://github.com/odygrd/quill/issues/778))
+
+- Added the `QUILL_DISABLE_FILE_INFO` preprocessor flag and CMake option.  
+  This disables `__FILE__` and `__LINE__` information in log statements at compile time when location-related patterns
+  (`%(file_name)`, `%(line_number)`, `%(short_source_location)`, `%(source_location)`)
+  are not needed in the `PatternFormatter`. This removes embedded source path strings from built binaries from the
+  security viewpoint.
+
+- Added the `QUILL_DETAILED_FUNCTION_NAME` CMake option. When enabled, this option uses compiler-specific detailed
+  function signatures (such as `__PRETTY_FUNCTION__` on GCC/Clang or `__FUNCSIG__` on MSVC) instead of the standard
+  `__FUNCTION__` in log macros. This provides more complete function information, including return types, namespaces,
+  and parameter types. This option is only relevant when `%(caller_function)` is used in the pattern
+  formatter. ([#785](https://github.com/odygrd/quill/issues/785))
+
+- Added `process_function_name` customisation point in `PatternFormatterOptions`. This function allows custom processing
+  of the function signature before it's displayed in logs. This makes more sense to use when
+  `QUILL_DETAILED_FUNCTION_NAME` is used. This provides flexibility to trim, format, or otherwise modify function
+  signatures to improve readability in log output when using the `%(caller_function)`
+  pattern. ([#785](https://github.com/odygrd/quill/issues/785))
+
+- Added helper macros for easy logging of user-defined types. Two new macros are available in `quill/HelperMacros.h`:
+  - `QUILL_LOGGABLE_DIRECT_FORMAT(Type)`: For types that contain pointers or have lifetime dependencies
+  - `QUILL_LOGGABLE_DEFERRED_FORMAT(Type)`: For types that only contain value types and are safe to copy
+
+  Note that these macros require you to provide either an `operator<<` for your type and they are just shortcuts to
+  existing functionality. ([#777](https://github.com/odygrd/quill/issues/777))
+
+  Example usage:
+  ```cpp
+  class User { /* ... */ };
+  std::ostream& operator<<(std::ostream& os, User const& user) { /* ... */ }
+  
+  // For types with pointers - will format immediately
+  QUILL_LOGGABLE_DIRECT_FORMAT(User)
+  
+  class Product { /* ... */ };
+  std::ostream& operator<<(std::ostream& os, Product const& product) { /* ... */ }
+  
+  // For types with only value members - can format asynchronously
+  QUILL_LOGGABLE_DEFERRED_FORMAT(Product)
+  ```
+
+### Improvements
+
+- Internally, refactored how runtime metadata are handled for more flexibility, providing three macros for logging with
+  runtime metadata:
+  - `QUILL_LOG_RUNTIME_METADATA_DEEP` - Takes a deep copy of `fmt`, `file`, `function` and `tags`. Most flexible
+    option, useful for forwarding logs from another logging library.
+  - `QUILL_LOG_RUNTIME_METADATA_HYBRID` - Will take a deep copy of `fmt` and `tags` and will take `file` and
+    `function` as reference. This is used for the new macro-free mode.
+  - `QUILL_LOG_RUNTIME_METADATA_SHALLOW` - Will take everything as reference. This is used when logging with
+    compile-time metadata and using, for example, a dynamic log-level such as `LOG_DYNAMIC`.
+
+- When using a sink with overridden `PatternFormatterOptions`, the option `add_metadata_to_multi_line_logs` will now be
+  correctly applied at the Sink level. Previously, this option was only available and effective at the Logger level
+  `PatternFormatter`.
+
+- When a Sink with override `PatternFormatterOptions` is used and if no other sink exists using the `Logger`
+  `PatternFormatterOptions`, then the backend thread will no longer perform a redundant format log statement.
+
+- When using a sink with overridden `PatternFormatterOptions`, the `log_statement` that is passed to the
+  `Filter::filter()` will now be formatted based on the overridden options instead of using the `Logger`
+  `PatternFormatterOptions`.
+
+- Update bundled `libfmt` to `v11.2.0`
+
+### API Changes
+
+- If you were previously setting `QUILL_ENABLE_IMMEDIATE_FLUSH` to `1`, this functionality has been moved to runtime
+  with more flexibility. Instead of using a boolean flag, you can now specify the flush interval by calling
+  `logger->set_immediate_flush(flush_every_n_messages)` on each logger instance. Set it to `1` for per-message flushing,
+  or to a higher value to flush after that many messages. Setting it to `0` disables
+  flushing which is the default behaviour. `QUILL_ENABLE_IMMEDIATE_FLUSH` still exists as a compile-time preprocessor
+  flag and is set to `1` by default. Setting `QUILL_ENABLE_IMMEDIATE_FLUSH 0` in the preprocessor will eliminate the
+  `if` branch from the hot path and disable this feature entirely, regardless of the value passed to
+  `set_immediate_flush(flush_every_n_messages)`.
+
+- The `QUILL_LOG_RUNTIME_METADATA` macro requires `file`, `function` and `fmt` to be passed as `char const*` and
+  `line_number` as `uint32_t`. This is a breaking change from the previous version.
+
+## v9.0.3
+
+- Add support for `void*` formatting ([#759](https://github.com/odygrd/quill/issues/759))
+- Fix a bug in `RotatingJsonFileSink.h` where file size-based rotation wasn't triggering
+  properly ([#767](https://github.com/odygrd/quill/issues/767))
+- Fix false positive `-Wstringop-overread` warning in GCC ([#766](https://github.com/odygrd/quill/issues/766))
+
+## v9.0.2
+
+- Add missing namespace in `QUILL_LOG_RUNTIME_METADATA` ([#743](https://github.com/odygrd/quill/issues/743))
+
+## v9.0.1
+
+- Fix crash when `LOG_BACKTRACE` is used ([#744](https://github.com/odygrd/quill/issues/744))
+- Add missing namespace in `QUILL_LOG_RUNTIME_METADATA` ([#743](https://github.com/odygrd/quill/issues/743))
+- Check for `nullptr` `Logger*` before setting log level via `QUILL_LOG_LEVEL` environment
+  variable ([#749](https://github.com/odygrd/quill/issues/749))
+- Change default mode of `FileSink` `fopen` to `a` to avoid overwriting existing files
+
+## v9.0.0
+
+### API Changes
+
+- Replaced the `bool huge_pages_enabled` flag in `FrontendOptions` with `quill::HugePagesPolicy huge_pages_policy` enum,
+  allowing huge page allocation to be attempted with a fallback to normal pages if unavailable. If you are using a
+  custom `FrontendOptions` type, you will need to update it to use the new
+  flag. ([#707](https://github.com/odygrd/quill/issues/707))
+- Previously, `QueueType::UnboundedDropping` and `QueueType::UnboundedBlocking` could grow up to 2 GB in size. This
+  limit is now configurable via `FrontendOptions::unbounded_queue_max_capacity`, which defaults to 2 GB.
+- `QueueType::UnboundedUnlimited` has been removed, as the same behavior can now be achieved by setting
+  `FrontendOptions::unbounded_queue_max_capacity` to the maximum value.
+- The `ConsoleSink` constructor now optionally accepts a `ConsoleSinkConfig`, similar to other sinks. If no
+  `ConsoleSinkConfig` is provided, a default one is used, logging to `stdout` with `ColourMode::Automatic`. For example:
+    ```c++
+    Frontend::create_or_get_sink<ConsoleSink>("console_sink",
+                                              []()
+                                              {
+                                                ConsoleSinkConfig config;
+                                                config.set_colour_mode(ConsoleSinkConfig::ColourMode::Never);
+                                                config.set_stream("stderr");
+                                                return config;
+                                              }());
+    ```
+
+### New Features
+
+- The default log level for each `Logger` can now be configured using the environment variable `QUILL_LOG_LEVEL`.
+  Supported values: `"tracel3"`, `"tracel2"`, `"tracel1"`, `"debug"`, `"info"`, `"notice"`, `"warning"`, `"error"`,
+  `"critical"`, `"none"`. When set, the logger is initialized with the corresponding log level. If
+  `logger->set_log_level(level)` is explicitly called in code, it will override the log level set via the environment
+  variable.
+- Added the `LOG_RUNTIME_METADATA(logger, log_level, file, line_number, function, fmt, ...)` macro.  
+  This enables passing runtime metadata (such as file, line number, and function) along with a log message,  
+  providing greater flexibility when forwarding logs from other logging
+  libraries. ([#696](https://github.com/odygrd/quill/issues/696))
+
+    ```c++
+    LOG_RUNTIME_METADATA(logger, quill::LogLevel::Info, "main.cpp", 20, "foo()", "Hello number {}", 8);
+    ```
+- Added a runtime check to detect duplicate backend worker threads caused by inconsistent linkage  
+  (e.g., mixing static and shared libraries). If needed, this check can be disabled using the  
+  `check_backend_singleton_instance` flag in
+  `BackendOptions`. ([#687](https://github.com/odygrd/quill/discussions/687#discussioncomment-12349621))
+- Added the `QUILL_DISABLE_FUNCTION_NAME` preprocessor flag and CMake option.  
+  This allows disabling `__FUNCTION__` in `LOG_*` macros when `%(caller_function)` is not used in `PatternFormatter`,  
+  eliminating Clang-Tidy warnings when logging inside lambdas.
+- It is now possible to override a logger's `PatternFormatter` on a per-sink basis. This allows the same logger to
+  output different formats for different sinks. Previously, achieving this required creating a custom sink type, but
+  this functionality is now built-in. See the
+  example: [sink_formatter_override](https://github.com/odygrd/quill/blob/master/examples/sink_formatter_override.cpp).
+- Added `Frontend::remove_logger_blocking(...)`, which blocks the caller thread until the specified logger is fully
+  removed.
+- Added `Frontend::shrink_thread_local_queue(capacity)` and `Frontend::get_thread_local_queue_capacity()`.
+  These functions allow dynamic management of thread-local SPSC queues when using an unbounded queue configuration. They
+  enable on-demand shrinking of a queue that has grown due to bursty logging, helping to reduce memory usage, although
+  in typical scenarios they won't be required.
+- Added the `SyslogSink`, which logs messages to the system's syslog.
+
+    ```c++
+    auto sink = quill::Frontend::create_or_get_sink<quill::SyslogSink>(
+      "app", []()
+      {
+        quill::SyslogSinkConfig config;
+        config.set_identifier("app");
+        return config;
+      }());
+    ```
+- Added the `SystemdSink`, which logs messages to systemd.
+
+    ```c++
+    auto sink = quill::Frontend::create_or_get_sink<quill::SystemdSink>(
+      "app", []()
+      {
+        quill::SystemdSinkConfig config;
+        config.set_identifier("app");
+        return config;
+      }());
+    ```  
+- Added the `AndroidSink`, which integrates with Android's logging system.
+
+    ```c++
+    auto sink = quill::Frontend::create_or_get_sink<quill::AndroidSink>(
+      "s1", []()
+      {
+        quill::AndroidSinkConfig config;
+        config.set_tag("app");
+        config.set_format_message(true);
+        return config;
+      }());
+    ```
+
+### Improvements
 
 - Updated bundled `libfmt` to `11.1.4`.
-- Fixed BSD builds. ([#688](https://github.com/odygrd/quill/issues/688))
+- When `add_metadata_to_multi_line_logs` in the `PatternFormatter` was set to false, fixed a bug where the last
+  character of the log message was dropped and added protection for empty messages.
+- Updated `LOG_EVERY_N` macros to log on the first occurrence (0th call) instead of waiting until the Nth call.
+- Added a `nullptr` check for `char*` and `const char*` during encoding, ensuring the library handles `nullptr` values
+  gracefully ([#735](https://github.com/odygrd/quill/discussions/735))
+- The `CsvWriter` could previously be used with `RotatingFileSink` via the constructor that accepted  
+  `std::shared_ptr<Sink>`, but rotated files did not include the CSV header.  
+  This has now been improved—when using the new constructor that accepts `quill::RotatingFileSinkConfig`,  
+  the CSV header is written at the start of each new rotated
+  file. ([#700](https://github.com/odygrd/quill/discussions/700))
+
+    ```c++
+    quill::RotatingFileSinkConfig sink_config;
+    sink_config.set_open_mode('w');
+    sink_config.set_filename_append_option(FilenameAppendOption::None);
+    sink_config.set_rotation_max_file_size(512);
+    sink_config.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::Index);
+    
+    quill::CsvWriter<OrderCsvSchema, quill::FrontendOptions> csv_writer{"orders.csv", sink_config};
+    for (size_t i = 0; i < 40; ++i)
+    {
+      csv_writer.append_row(132121122 + i, "AAPL", i, 100.1, "BUY");
+    }
+    ```
+- When using `CsvWriter` with `open_mode == 'a'`, the header will no longer be rewritten if the file already exists.
 - On Linux, setting a long backend thread name now truncates it instead of
   failing. ([#691](https://github.com/odygrd/quill/issues/691))
-- Added a Windows-specific check to detect duplicate backend worker threads caused by inconsistent linkage (e.g., mixing
-  static and shared libraries). ([#687](https://github.com/odygrd/quill/discussions/687#discussioncomment-12349621))
+- Fixed BSD builds. ([#688](https://github.com/odygrd/quill/issues/688))
+- Added adaptive termination for stable measurements in `rdtsc` calibration during init
+- Fixed `QUILL_ATTRIBUTE_HOT` and `QUILL_ATTRIBUTE_COLD` clang detection
 - CMake improvements: switched to range syntax for minimum required version and bumped minimum required CMake version to
   `3.12`. ([#686](https://github.com/odygrd/quill/issues/686))
+- Correct the installation location of pkg-config files. They are now properly placed in `/usr/local/lib`.
+  ([#715](https://github.com/odygrd/quill/issues/715))
+- Removed deprecated `TriviallyCopyableTypeCodec`
 
 ## v8.2.0
 
@@ -102,30 +373,30 @@
   from pre-`v4` versions. Previously, users had to define a custom `Codec` for every non-trivially copyable user-defined
   type they wanted to log.
 
-  ```c++
-  template <>
-  struct quill::Codec<UserTypeA> : quill::DeferredFormatCodec<UserTypeA>
-  {
-  };
-  
-  template <>
-  struct quill::Codec<UserTypeB> : quill::DirectFormatCodec<UserTypeB>
-  {
-  };
-  ```
+   ```c++
+   template <>
+   struct quill::Codec<UserTypeA> : quill::DeferredFormatCodec<UserTypeA>
+   {
+   };
+      
+   template <>
+   struct quill::Codec<UserTypeB> : quill::DirectFormatCodec<UserTypeB>
+   {
+   };
+   ```
 
-  - `DeferredFormatCodec` now supports both trivially and non-trivially copyable types:
-    - For trivially copyable types, it behaves the same as `TriviallyCopyableTypeCodec`.
-    - For non-trivially copyable types, it works similarly to pre-`v4` by taking a copy of the object using the copy
-      constructor and placement new.
-  - `DirectFormatCodec` formats the object immediately in the hot path, serving as a shortcut to explicitly formatting
-    the object when logging.
-  - For advanced use cases, a custom `Codec` can still be defined for finer control over encoding/decoding.
+    - `DeferredFormatCodec` now supports both trivially and non-trivially copyable types:
+        - For trivially copyable types, it behaves the same as `TriviallyCopyableTypeCodec`.
+        - For non-trivially copyable types, it works similarly to pre-`v4` by taking a copy of the object using the copy
+          constructor and placement new.
+    - `DirectFormatCodec` formats the object immediately in the hot path, serving as a shortcut to explicitly formatting
+      the object when logging.
+    - For advanced use cases, a custom `Codec` can still be defined for finer control over encoding/decoding.
 
   See:
-  - [DeferredFormatCodec Usage](https://github.com/odygrd/quill/blob/master/examples/user_defined_types_logging_deferred_format.cpp)
-  - [DirectFormatCodec Usage](https://github.com/odygrd/quill/blob/master/examples/user_defined_types_logging_direct_format.cpp)
-  - [Documentation](https://quillcpp.readthedocs.io/en/latest/cheat_sheet.html#logging-user-defined-types)
+    - [DeferredFormatCodec Usage](https://github.com/odygrd/quill/blob/master/examples/user_defined_types_logging_deferred_format.cpp)
+    - [DirectFormatCodec Usage](https://github.com/odygrd/quill/blob/master/examples/user_defined_types_logging_direct_format.cpp)
+    - [Documentation](https://quillcpp.readthedocs.io/en/latest/cheat_sheet.html#logging-user-defined-types)
 
 - Added codec support for C-style arrays of user-defined types in `std/Array.h`
 - Fixed warnings: `-Wimplicit-int-float-conversion`, `-Wfloat-equal`, and `-Wdocumentation`.
@@ -1026,7 +1297,7 @@ within a distinct namespace, there are no conflicts even if you link your own `l
   ```
 
 - Fixed a bug in timestamp formatting that occasionally displayed an hour component of 0 as
-  24. ([#329](https://github.com/odygrd/quill/pull/329))
+    24. ([#329](https://github.com/odygrd/quill/pull/329))
 
 - Added support for specifying a runtime log level, allowing dynamic log level configuration at runtime.
   The new runtime log level feature provides flexibility when needed, with a minor overhead cost.

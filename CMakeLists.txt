@@ -13,6 +13,12 @@ option(QUILL_X86ARCH "Enable x86-specific optimizations for cache coherence usin
 
 option(QUILL_DISABLE_NON_PREFIXED_MACROS "Enable this option to disable non-prefixed `LOG_*` macros, keeping only the `QUILL_LOG_*` macros to avoid conflicts with other logging libraries." OFF)
 
+option(QUILL_DISABLE_FUNCTION_NAME "Disable the use of __FUNCTION__ in `LOG_*` macros when the function name is not needed." OFF)
+
+option(QUILL_DETAILED_FUNCTION_NAME "Use detailed function name (__PRETTY_FUNCTION__ or __FUNCSIG__) instead of __FUNCTION__ in LOG_* macros" OFF)
+
+option(QUILL_DISABLE_FILE_INFO "Disable the use of __FILE__ and __LINE__ in `LOG_*` macros when the file name and the line number are not needed." OFF)
+
 option(QUILL_BUILD_EXAMPLES "Enable this option to build and install the examples. Set this to ON to include example projects in the build process and have them installed after configuring with CMake." OFF)
 
 option(QUILL_BUILD_TESTS "Enable this option to build the test suite." OFF)
@@ -32,6 +38,9 @@ option(QUILL_USE_VALGRIND "Use Valgrind as the default memory checking tool in C
 option(QUILL_ENABLE_INSTALL "Enable the CMake install target when Quill is not the master project." OFF)
 
 option(QUILL_DOCS_GEN "Generate documentation during the build process." OFF)
+
+# Internal option
+set(QUILL_ENABLE_GCC_HARDENING OFF CACHE INTERNAL "")
 
 #-------------------------------------------------------------------------------------------------------
 # Determine if quill is built as a subproject (using add_subdirectory) or if it is the master project.
@@ -113,6 +122,9 @@ message(STATUS "QUILL_NO_EXCEPTIONS: " ${QUILL_NO_EXCEPTIONS})
 message(STATUS "QUILL_NO_THREAD_NAME_SUPPORT: " ${QUILL_NO_THREAD_NAME_SUPPORT})
 message(STATUS "QUILL_X86ARCH: " ${QUILL_X86ARCH})
 message(STATUS "QUILL_DISABLE_NON_PREFIXED_MACROS: " ${QUILL_DISABLE_NON_PREFIXED_MACROS})
+message(STATUS "QUILL_DISABLE_FUNCTION_NAME: " ${QUILL_DISABLE_FUNCTION_NAME})
+message(STATUS "QUILL_DETAILED_FUNCTION_NAME: " ${QUILL_DETAILED_FUNCTION_NAME})
+message(STATUS "QUILL_DISABLE_FILE_INFO: " ${QUILL_DISABLE_FILE_INFO})
 message(STATUS "QUILL_ENABLE_INSTALL: " ${QUILL_ENABLE_INSTALL})
 
 #---------------------------------------------------------------------------------------
@@ -159,6 +171,7 @@ set(HEADER_FILES
         include/quill/backend/BackendManager.h
         include/quill/backend/BackendOptions.h
         include/quill/backend/BackendWorker.h
+        include/quill/backend/BackendWorkerLock.h
         include/quill/backend/BacktraceStorage.h
         include/quill/backend/ManualBackendWorker.h
         include/quill/backend/PatternFormatter.h
@@ -203,6 +216,7 @@ set(HEADER_FILES
         include/quill/core/QuillError.h
         include/quill/core/Rdtsc.h
         include/quill/core/SinkManager.h
+        include/quill/core/SourceLocation.h
         include/quill/core/Spinlock.h
         include/quill/core/ThreadContextManager.h
         include/quill/core/TimeUtilities.h
@@ -211,6 +225,7 @@ set(HEADER_FILES
 
         include/quill/filters/Filter.h
 
+        include/quill/sinks/AndroidSink.h
         include/quill/sinks/ConsoleSink.h
         include/quill/sinks/FileSink.h
         include/quill/sinks/JsonSink.h
@@ -220,6 +235,8 @@ set(HEADER_FILES
         include/quill/sinks/RotatingSink.h
         include/quill/sinks/Sink.h
         include/quill/sinks/StreamSink.h
+        include/quill/sinks/SyslogSink.h
+        include/quill/sinks/SystemdSink.h
 
         include/quill/std/Array.h
         include/quill/std/Chrono.h
@@ -239,15 +256,17 @@ set(HEADER_FILES
 
         include/quill/Backend.h
         include/quill/BackendTscClock.h
+        include/quill/BinaryDataDeferredFormatCodec.h
         include/quill/CsvWriter.h
         include/quill/DeferredFormatCodec.h
         include/quill/DirectFormatCodec.h
         include/quill/Frontend.h
+        include/quill/HelperMacros.h
+        include/quill/LogFunctions.h
         include/quill/Logger.h
         include/quill/LogMacros.h
         include/quill/StopWatch.h
         include/quill/StringRef.h
-        include/quill/TriviallyCopyableCodec.h
         include/quill/UserClockSource.h
         include/quill/Utility.h
 )
@@ -270,6 +289,18 @@ endif ()
 
 if (QUILL_DISABLE_NON_PREFIXED_MACROS)
     target_compile_definitions(${TARGET_NAME} PUBLIC INTERFACE -DQUILL_DISABLE_NON_PREFIXED_MACROS)
+endif ()
+
+if (QUILL_DISABLE_FUNCTION_NAME)
+    target_compile_definitions(${TARGET_NAME} PUBLIC INTERFACE -DQUILL_DISABLE_FUNCTION_NAME)
+endif ()
+
+if (QUILL_DETAILED_FUNCTION_NAME)
+    target_compile_definitions(${TARGET_NAME} PUBLIC INTERFACE -DQUILL_DETAILED_FUNCTION_NAME)
+endif ()
+
+if (QUILL_DISABLE_FILE_INFO)
+    target_compile_definitions(${TARGET_NAME} PUBLIC INTERFACE -DQUILL_DISABLE_FILE_INFO)
 endif ()
 
 if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.19)
@@ -319,7 +350,7 @@ if (QUILL_MASTER_PROJECT OR QUILL_ENABLE_INSTALL)
     set(QUILL_INC_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE STRING
             "Installation directory for include files, relative to ${CMAKE_INSTALL_PREFIX}.")
 
-    set(QUILL_PKGCONFIG_DIR ${CMAKE_INSTALL_PREFIX}/pkgconfig CACHE PATH
+    set(QUILL_PKGCONFIG_DIR ${CMAKE_INSTALL_LIBDIR}/pkgconfig CACHE PATH
             "Installation directory for pkgconfig (.pc) files, relative to ${CMAKE_INSTALL_PREFIX}.")
 
     if (WIN32)
@@ -388,7 +419,7 @@ endif ()
 if (QUILL_DOCS_GEN)
     if (NOT QUILL_BUILD_EXAMPLES)
         message(FATAL_ERROR "QUILL_DOCS_GEN requires QUILL_BUILD_EXAMPLES to be ON. Please enable QUILL_BUILD_EXAMPLES.")
-    endif()
+    endif ()
 
     add_subdirectory(docs)
 endif ()

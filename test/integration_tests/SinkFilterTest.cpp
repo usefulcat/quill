@@ -12,9 +12,6 @@
 
 using namespace quill;
 
-/**
- * Filter class for our file handler
- */
 class FileFilterA : public Filter
 {
 public:
@@ -34,9 +31,6 @@ public:
   }
 };
 
-/**
- * Filter for the stdout handler
- */
 class FileFilterB : public Filter
 {
 public:

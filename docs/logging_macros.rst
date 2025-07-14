@@ -29,6 +29,9 @@ or
 
     target_compile_definitions(${TARGET} PUBLIC -DQUILL_COMPILE_ACTIVE_LOG_LEVEL=QUILL_COMPILE_ACTIVE_LOG_LEVEL_WARNING)
 
+.. note::
+    When using `_LIMIT` macros, you might need to manually `#include <chrono>` in your code. This header is not automatically included to avoid imposing unnecessary dependencies on all logging macros when only specific ones require it.
+
 Standard Logging Macros
 -----------------------
 
@@ -336,3 +339,19 @@ Dynamic logging macros provide runtime log level flexibility with a small overhe
 - :c:macro:`LOGV_DYNAMIC(logger, log_level, message, ...)`
 
 - :c:macro:`LOGJ_DYNAMIC(logger, log_level, message, ...)`
+
+Runtime Metadata Logging Macro
+------------------------------
+
+By default, the library creates and stores metadata information (e.g., source location) for each log statement at compile time.
+It is also possible to supply this metadata at runtime along with a log message. While this provides runtime flexibility,
+it introduces some overhead compared to compile-time metadata macros. Therefore, it is recommended to prefer using
+the compile-time metadata macros whenever possible. Quill provides three specialized macros for working with runtime metadata, each offering different trade-offs between flexibility and performance:
+
+- :c:macro:`QUILL_LOG_RUNTIME_METADATA_DEEP` - Takes a deep copy of ``fmt``, ``file``, ``function`` and ``tags``. Most flexible option, suitable for forwarding logs from another logging library to Quill.
+
+- :c:macro:`QUILL_LOG_RUNTIME_METADATA_HYBRID` - Takes a deep copy of ``fmt`` and ``tags``, while referencing ``file`` and ``function``. Used for the macro-free mode.
+
+- :c:macro:`QUILL_LOG_RUNTIME_METADATA_SHALLOW` - Takes everything as reference. Most efficient option when using compile-time metadata with dynamic log levels like ``LOG_DYNAMIC``.
+
+Note that ``QUILL_LOG_RUNTIME_METADATA`` is equivalent to ``QUILL_LOG_RUNTIME_METADATA_DEEP`` but without the ``tags`` parameter.

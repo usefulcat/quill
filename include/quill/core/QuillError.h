@@ -7,24 +7,25 @@
 #pragma once
 
 #include "quill/core/Attributes.h"
+#include "quill/core/Common.h"
 
 #include <exception>
 #include <string>
 
-/**
- * Require check
- */
-#define QUILL_REQUIRE(expression, error)                                                           \
-  do                                                                                               \
-  {                                                                                                \
-    if (QUILL_UNLIKELY(!(expression)))                                                             \
-    {                                                                                              \
-      printf("Quill fatal error: %s (%s:%d)\n", error, __FILE__, __LINE__);                        \
-      std::abort();                                                                                \
-    }                                                                                              \
-  } while (0)
-
 #if defined(QUILL_NO_EXCEPTIONS)
+  #include <cstdio>
+  #include <cstdlib>
+
+  #define QUILL_REQUIRE(expression, error)                                                         \
+    do                                                                                             \
+    {                                                                                              \
+      if (QUILL_UNLIKELY(!(expression)))                                                           \
+      {                                                                                            \
+        printf("Quill fatal error: %s (%s:%d)\n", error, QUILL_FILE_NAME, QUILL_LINE_NO);          \
+        std::abort();                                                                              \
+      }                                                                                            \
+    } while (0)
+
   #define QUILL_TRY if (true)
   #define QUILL_THROW(ex) QUILL_REQUIRE(false, ex.what())
   #define QUILL_CATCH(x) if (false)

@@ -139,6 +139,12 @@ TEST_CASE("std_array_logging")
     std::array<char const*, 4> scva = {"c style", "string test", "test", "log"};
     LOG_INFO(logger, "scva {}", scva);
 
+    std::array<char const*, 4> scvae = {"c style", "", "", "log"};
+    LOG_INFO(logger, "scvae {}", scvae);
+
+    std::array<char const*, 4> scvan = {"c style", nullptr, nullptr, "log"};
+    LOG_INFO(logger, "scvan {}", scvan);
+
     std::array<std::array<int, 2>, 3> aai = {{{321, 123}, {444, 333}, {111, 222}}};
     LOG_INFO(logger, "aai {}", aai);
 
@@ -233,6 +239,12 @@ TEST_CASE("std_array_logging")
 
   REQUIRE(quill::testing::file_contains(
     file_contents, std::string{"LOG_INFO      " + logger_name + "       scva [\"c style\", \"string test\", \"test\", \"log\"]"}));
+
+  REQUIRE(quill::testing::file_contains(
+    file_contents, std::string{"LOG_INFO      " + logger_name + "       scvae [\"c style\", \"\", \"\", \"log\"]"}));
+
+  REQUIRE(quill::testing::file_contains(
+    file_contents, std::string{"LOG_INFO      " + logger_name + "       scvan [\"c style\", \"\", \"\", \"log\"]"}));
 
   REQUIRE(quill::testing::file_contains(
     file_contents, std::string{"LOG_INFO      " + logger_name + "       aai [[321, 123], [444, 333], [111, 222]]"}));

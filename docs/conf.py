@@ -12,6 +12,7 @@ def configureDoxyfile(input_dir, output_dir):
     with open('Doxyfile', 'w') as file:
         file.write(filedata)
 
+
 # Set paths for local build
 input_dir = '../include/quill'
 output_dir = 'build'
@@ -35,7 +36,7 @@ breathe_projects = {
 project = 'Quill'
 copyright = '2024, Odysseas Georgoudis'
 author = 'Odysseas Georgoudis'
-release = 'v8.3.0'
+release = 'v10.0.1'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

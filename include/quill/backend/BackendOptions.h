@@ -64,8 +64,8 @@ struct BackendOptions
    * If a frontend threads continuously push messages to the queue (e.g., logging in a loop),
    * no logs can ever be processed.
    *
-   * When the soft limit is reached (default: 800), the backend worker thread will try to process
-   * a batch of cached transit events all at once
+   * When the soft limit is reached the backend worker thread will try to process a batch of cached
+   * transit events all at once
    *
    * The frontend queues are emptied on each iteration, so the actual popped messages
    * can be much greater than the transit_events_soft_limit.
@@ -109,10 +109,11 @@ struct BackendOptions
    * next iteration. The timestamp check is performed with microsecond precision.
    *
    * Example scenario:
-   * 1. Frontend thread takes a timestamp, then sleeps before pushing to the queue.
+   * 1. Frontend thread takes a timestamp at the very start of logging, then becomes delayed
+   *    (preempted, blocked, processing slowly, etc.) before pushing to the queue.
    * 2. Backend thread takes timestamp `now()` and subtracts the grace period, reads queues up to
    *    the adjusted `now()`, and writes the logs.
-   * 3. Frontend thread wakes up and pushes to the queue.
+   * 3. Frontend thread wakes up and pushes the message with its already-recorded timestamp to the queue.
    * 4. Backend thread reads and writes the delayed timestamp, resulting in an out-of-order log.
    *
    * Setting this option to a non-zero value causes a minor delay in reading the messages from the
@@ -221,9 +222,9 @@ struct BackendOptions
    * The indices correspond to LogLevel enum values defined elsewhere in the codebase.
    * These names provide human-readable identifiers for each log level.
    */
-  std::array<std::string, 12> log_level_descriptions = {
+  std::array<std::string, 11> log_level_descriptions = {
     "TRACE_L3", "TRACE_L2", "TRACE_L1", "DEBUG",     "INFO", "NOTICE",
-    "WARNING",  "ERROR",    "CRITICAL", "BACKTRACE", "NONE", "DYNAMIC"};
+    "WARNING",  "ERROR",    "CRITICAL", "BACKTRACE", "NONE"};
 
   /**
    * @brief Short codes or identifiers for each log level.
@@ -231,8 +232,30 @@ struct BackendOptions
    * Provides short codes representing each log level for compact identification and usage.
    * The indices correspond to LogLevel enum values defined elsewhere in the codebase.
    */
-  std::array<std::string, 12> log_level_short_codes = {"T3", "T2", "T1", "D",  "I", "N",
-                                                       "W",  "E",  "C",  "BT", "_", "DN"};
+  std::array<std::string, 11> log_level_short_codes = {"T3", "T2", "T1", "D",  "I", "N",
+                                                       "W",  "E",  "C",  "BT", "_"};
+
+  /**
+   * Enables a runtime check to detect multiple instances of the backend singleton.
+   *
+   * When mixing shared and static libraries, linkage issues can lead to multiple instances
+   * of the backend singleton. This may result in multiple backend worker threads running
+   * simultaneously, causing unexpected behavior or crashes.
+   *
+   * This issue commonly occurs on Windows when Quill is compiled as a static library and linked
+   * into both a shared library and the main executable, creating separate instances. While using
+   * Quill as a static library is generally recommended, in such cases, the preferred approach
+   * is to build Quill as a shared library and export its symbols
+   * (e.g., using `WINDOWS_EXPORT_ALL_SYMBOLS`).
+   *
+   * On Windows, this check is implemented using a named mutex, whereas on Linux and other POSIX
+   * systems, it relies on a named semaphore. In rare cases, this mechanism may interfere with
+   * certain environments or containerized deployments. If necessary, this check can be disabled
+   * by setting this option to `false`.
+   *
+   * Setting this option to `true` enables the check, while setting it to `false` disables it.
+   */
+  bool check_backend_singleton_instance = true;
 };
 
 QUILL_END_NAMESPACE

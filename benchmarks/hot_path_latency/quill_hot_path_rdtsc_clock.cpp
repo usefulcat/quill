@@ -13,9 +13,10 @@
 struct FrontendOptions
 {
   static constexpr quill::QueueType queue_type = quill::QueueType::UnboundedBlocking;
-  static constexpr uint32_t initial_queue_capacity = 131'072;
+  static constexpr size_t initial_queue_capacity = 131'072;
   static constexpr uint32_t blocking_queue_retry_interval_ns = 800;
-  static constexpr bool huge_pages_enabled = false;
+  static constexpr size_t unbounded_queue_max_capacity = 2ull * 1024 * 1024 * 1024; // 2 GiB
+  static constexpr quill::HugePagesPolicy huge_pages_policy = quill::HugePagesPolicy::Never;
 };
 
 using Frontend = quill::FrontendImpl<FrontendOptions>;
@@ -72,7 +73,8 @@ void quill_benchmark(std::vector<uint16_t> const& thread_count_array,
   };
 
   // on main
-  auto log_func = [logger](uint64_t k, uint64_t i, double d) {
+  auto log_func = [logger](uint64_t k, uint64_t i, double d)
+  {
     // Main logging function
     // This will get called MESSAGES_PER_ITERATION * ITERATIONS for each caller thread.
     // MESSAGES_PER_ITERATION will get averaged to a single number
