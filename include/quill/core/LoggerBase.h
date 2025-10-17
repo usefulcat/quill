@@ -196,7 +196,7 @@ protected:
       if (size % align != 0) {
         size += align - (size % align);
       }
-      assert((size % align) == 0);
+      QUILL_ASSERT((size % align) == 0, "failed to enforce alignment requirement");
       return std::aligned_alloc(align, size);
     } else {
       return std::malloc(size);
