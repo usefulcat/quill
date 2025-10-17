@@ -13,7 +13,6 @@
 #include "quill/core/TimeUtilities.h"
 #include "quill/sinks/StreamSink.h"
 
-#include <cassert>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -42,6 +41,11 @@
 #endif
 
 QUILL_BEGIN_NAMESPACE
+
+#if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
 
 enum class FilenameAppendOption : uint8_t
 {
@@ -464,5 +468,9 @@ protected:
   std::chrono::steady_clock::time_point _last_fsync_timestamp{};
   std::unique_ptr<char[]> _write_buffer;
 };
+
+#if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
+#pragma warning(pop)
+#endif
 
 QUILL_END_NAMESPACE

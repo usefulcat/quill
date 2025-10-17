@@ -6,7 +6,6 @@
 #include "quill/core/QuillError.h"
 
 #include <atomic>
-#include <cassert>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -43,6 +42,12 @@ QUILL_BEGIN_NAMESPACE
 
 namespace detail
 {
+
+#if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
+#pragma warning(push)
+#pragma warning(disable : 4324)
+#endif
+
 /**
  * A bounded single producer single consumer ring buffer.
  */
@@ -214,7 +219,8 @@ private:
    */
   QUILL_NODISCARD static std::byte* _align_pointer(void* pointer, size_t alignment) noexcept
   {
-    assert(is_power_of_two(alignment) && "alignment must be a power of two");
+    QUILL_ASSERT(is_power_of_two(alignment),
+                 "alignment must be a power of two in BoundedSPSCQueue::_align_pointer()");
     return reinterpret_cast<std::byte*>((reinterpret_cast<uintptr_t>(pointer) + (alignment - 1ul)) &
                                         ~(alignment - 1ul));
   }
@@ -332,6 +338,11 @@ private:
 };
 
 using BoundedSPSCQueue = BoundedSPSCQueueImpl<size_t>;
+
+#if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
+#pragma warning(pop)
+#endif
+
 } // namespace detail
 
 QUILL_END_NAMESPACE
