@@ -32,6 +32,11 @@ class BackendWorker;
 class BacktraceStorage;
 class LoggerManager;
 
+#if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
+#pragma warning(push)
+#pragma warning(disable : 4324)
+#endif
+
 /***/
 class alignas(QUILL_CACHE_LINE_SIZE) LoggerBase
 {
@@ -222,6 +227,12 @@ protected:
   std::shared_ptr<PatternFormatter> _pattern_formatter; /* The backend thread will set this once, we never access it on the frontend */
   std::shared_ptr<BacktraceStorage> _backtrace_storage; /* The backend thread will construct this, we never access it on the frontend */
 };
+
+static_assert((sizeof(LoggerBase) % QUILL_CACHE_LINE_SIZE) == 0);
+#if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
+#pragma warning(pop)
+#endif
+
 } // namespace detail
 
 QUILL_END_NAMESPACE
