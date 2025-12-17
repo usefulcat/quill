@@ -202,43 +202,58 @@ struct Codec
       size_t constexpr N = std::extent_v<Arg>;
       uint32_t const len = conditional_arg_size_cache[conditional_arg_size_cache_index++];
 
+      // Local copy improves generated code (avoids aliasing penalties)
+      std::byte* buf_ptr = buffer;
+
       if (QUILL_UNLIKELY(len > N))
       {
         // no '\0' in c array
         QUILL_ASSERT(len == N + 1, "Invalid length for c array in Codec::encode(), expected N + 1");
-        std::memcpy(buffer, arg, N);
-        buffer[N] = std::byte{'\0'};
+        std::memcpy(buf_ptr, arg, N);
+        buf_ptr[N] = std::byte{'\0'};
       }
       else
       {
-        std::memcpy(buffer, arg, len);
+        std::memcpy(buf_ptr, arg, len);
       }
 
-      buffer += len;
+      buffer = buf_ptr + len;
     }
     else if constexpr (std::disjunction_v<std::is_same<Arg, char*>, std::is_same<Arg, char const*>>)
     {
       // null terminator is included in the len for c style strings
       uint32_t const len = conditional_arg_size_cache[conditional_arg_size_cache_index++];
 
-      if (arg)
+      // Local copy improves generated code (avoids aliasing penalties)
+      std::byte* buf_ptr = buffer;
+
+      if (QUILL_LIKELY(arg != nullptr))
       {
         // avoid gcc warning, even when size == 0
-        std::memcpy(buffer, arg, len - 1);
+        std::memcpy(buf_ptr, arg, len - 1);
       }
 
-      buffer[len - 1] = std::byte{'\0'};
-      buffer += len;
+      buf_ptr[len - 1] = std::byte{'\0'};
+      buffer = buf_ptr + len;
     }
     else if constexpr (std::disjunction_v<detail::is_std_string<Arg>, std::is_same<Arg, std::string_view>>)
     {
       // for std::string we store the size first, in order to correctly retrieve it
       // Copy the length first and then the actual string
       auto const len = static_cast<uint32_t>(arg.length());
-      std::memcpy(buffer, &len, sizeof(len));
-      buffer += sizeof(len);
-      std::memcpy(buffer, arg.data(), len);
-      buffer += len;
+
+      // Local copy improves generated code (avoids aliasing penalties)
+      std::byte* buf_ptr = buffer;
+      std::memcpy(buf_ptr, &len, sizeof(len));
+      buf_ptr += sizeof(len);
+
+      // Only copy if length > 0 to avoid UBSAN with nullptr in memcpy
+      if (QUILL_LIKELY(len != 0))
+      {
+        std::memcpy(buf_ptr, arg.data(), len);
+      }
+
+      buffer = buf_ptr + len;
     }
     else
     {
@@ -360,11 +375,12 @@ QUILL_NODISCARD QUILL_ATTRIBUTE_HOT size_t compute_encoded_size_and_cache_string
  * @param args The arguments to be encoded.
  */
 template <typename... Args>
-QUILL_ATTRIBUTE_HOT void encode(std::byte*& buffer, SizeCacheVector const& conditional_arg_size_cache,
-                                Args const&... args)
+QUILL_ATTRIBUTE_HOT void encode(std::byte*& buffer,
+                                SizeCacheVector const& conditional_arg_size_cache, Args&&... args)
 {
   QUILL_MAYBE_UNUSED uint32_t conditional_arg_size_cache_index{0};
-  (Codec<remove_cvref_t<Args>>::encode(buffer, conditional_arg_size_cache, conditional_arg_size_cache_index, args),
+  (Codec<remove_cvref_t<Args>>::encode(buffer, conditional_arg_size_cache, conditional_arg_size_cache_index,
+                                       static_cast<decltype(args)&&>(args)),
    ...);
 }
 

@@ -1,3 +1,7 @@
+- [v11.1.0](#v1110)
+- [v11.0.2](#v1102)
+- [v11.0.1](#v1101)
+- [v11.0.0](#v1100)
 - [v10.2.0](#v1020)
 - [v10.1.0](#v1010)
 - [v10.0.1](#v1001)
@@ -92,13 +96,91 @@
 - [v1.1.0](#v110)
 - [v1.0.0](#v100)
 
+## v11.1.0
+
+- Fixed thread-local context duplication across shared libraries ([#890](https://github.com/odygrd/quill/issues/890))
+
+## v11.0.2
+
+- Fixed UBSAN warning when logging empty `std::string_view` ([#885](https://github.com/odygrd/quill/issues/885))
+- Updated `ConsoleSink` constructor to accept an optional `FileEventNotifier` parameter for consistency with other
+  sinks ([#886](https://github.com/odygrd/quill/issues/886))
+
+## v11.0.1
+
+- Fix `BacktraceStorage` `index` reset to prevent `SIGSEGV` when using `LOG_BACKTRACE`
+
+## v11.0.0
+
+- Update bundled `libfmt` to `v12.1.0`
+- Minor correction to `_last_sink_flush_time update` when `fflush()` fails
+- Added retry logic and shared access handling for file open and rotation on Windows
+- Use `::WriteFile` instead of `fwrite` to prevent `\r\r\n` line endings on Windows
+- Avoid file descriptor leaks by setting `O_CLOEXEC` on Unix and `HANDLE_FLAG_INHERIT` on Windows
+- Added `SimpleSetup.h` convenience header for trivial program cases to easily setup a logger. For example
+   ```c++
+    #include "quill/SimpleSetup.h"
+    #include "quill/LogMacros.h"
+  
+    int main()
+    {
+      auto* logger = quill::simple_logger();
+      LOG_INFO(logger, "Hello from {}!", "Quill");
+  
+      auto* logger2 = quill::simple_logger("test.log");
+      LOG_INFO(logger2, "This message goes to a file");
+    }
+  ```
+- Fixed argument forwarding when encoding user-defined types with `DeferredFormatCodec` or STL containers to properly
+  handle rvalue references. For example, the following move-only type will now work correctly:
+    ```c++
+    class MoveOnlyType {
+    public:
+      MoveOnlyType(std::string name, std::string value, uint32_t count)
+        : name(std::move(name)), value(std::move(value)), count(count) {}
+      MoveOnlyType(MoveOnlyType&&) = default;
+      MoveOnlyType(MoveOnlyType const&) = delete;
+      std::string name;
+      std::string value;
+      uint32_t count;
+    };
+
+    template <>
+    struct fmtquill::formatter<MoveOnlyType> {
+      constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+      auto format(MoveOnlyType const& obj, format_context& ctx) const {
+        return fmtquill::format_to(ctx.out(), "MoveOnlyType(name: {}, value: {}, count: {})",
+                                   obj.name, obj.value, obj.count);
+      }
+    };
+
+    template <>
+    struct quill::Codec<MoveOnlyType> : quill::DeferredFormatCodec<MoveOnlyType> {};
+
+    MoveOnlyType obj{"Test", "Value1", 42};
+    LOG_INFO(logger, "obj: {}", std::move(obj));  // Properly forwards and moves
+    ```
+
 ## v10.2.0
-- Fixed `PatternFormatter` automatic newline appending by making the suffix ('\n') configurable or optionally disabled via `PatternFormatterOptions`
-- Fixed segmentation fault when `DirectFormatCodec` was used with enums types ([#848](https://github.com/odygrd/quill/issues/848))
-- Fixed a compiler error when `LOG_DYNAMIC` is used with `QUILL_DISABLE_FILE_INFO` ([#847](https://github.com/odygrd/quill/issues/847))
+
+- Added fuzzing tests to CI to catch memory and undefined behavior issues
+- Fixed `PatternFormatter` automatic newline appending by making the suffix ('\n') configurable or optionally disabled
+  via `PatternFormatterOptions`
+- Fixed segmentation fault when `DirectFormatCodec` was used with enums
+  types ([#848](https://github.com/odygrd/quill/issues/848))
+- Fixed segmentation fault when `DirectFormatCodec` was used with STL containers of enums
+- Fixed a compiler error when `LOG_DYNAMIC` is used with
+  `QUILL_DISABLE_FILE_INFO` ([#847](https://github.com/odygrd/quill/issues/847))
+- Fixed process ID capture in `BackendWorker` to support `fork()`
+  correctly ([#860](https://github.com/odygrd/quill/issues/860))
+- Fixed undefined behavior caused by passing `nullptr` to `memcpy` when encoding empty `std::vector`
+- Updated `BackendOptions::check_printable_char` to allow tab (`\t`) and carriage return (`\r`) characters by
+  default ([#856](https://github.com/odygrd/quill/issues/856))
 - Increased `RdtscClock` resync lag thresholds to improve cross-system compatibility
 - Added `QUILL_ENABLE_ASSERTIONS` CMake option and preprocessor flag to enable assertions in release builds
 - Allow `RotatingSink` to rotate the file on creation with `rotation_on_creation()`
+- Improved `SignalHandlerOptions` configurability by replacing hardcoded logger exclusion string with
+  `excluded_logger_substrings` option
 - Silence MSVC warnings (4324, 4996) in source code instead of CMake
 
 ## v10.1.0

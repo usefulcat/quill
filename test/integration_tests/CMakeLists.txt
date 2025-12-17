@@ -47,7 +47,13 @@ function(quill_add_test TEST_NAME SOURCES)
     set_target_properties(${TEST_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/build/test)
 
     # Add this target to the post build unit tests
-    doctest_discover_tests(${TEST_NAME})
+    # Set sanitizer environment variables for test execution if sanitizers are enabled
+    if (QUILL_SANITIZE_ADDRESS)
+        doctest_discover_tests(${TEST_NAME} PROPERTIES
+            ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:check_initialization_order=1:halt_on_error=1;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1")
+    else()
+        doctest_discover_tests(${TEST_NAME})
+    endif()
 endfunction()
 
 include(Doctest)
@@ -60,6 +66,7 @@ quill_add_test(TEST_BackendTransitBufferSoftLimit BackendTransitBufferSoftLimitT
 quill_add_test(TEST_BackendTscClock BackendTscClockTest.cpp)
 quill_add_test(TEST_BacktraceDynamicLogLevel BacktraceDynamicLogLevelTest.cpp)
 quill_add_test(TEST_BacktraceFlushOnError BacktraceFlushOnErrorTest.cpp)
+quill_add_test(TEST_BacktraceMultithreadedStressTest BacktraceMultithreadedStressTest.cpp)
 quill_add_test(TEST_BacktraceManualFlush BacktraceManualFlushTest.cpp)
 quill_add_test(TEST_BacktraceNoFlush BacktraceNoFlushTest.cpp)
 quill_add_test(TEST_BacktraceTerminatedThreadFlush BacktraceTerminatedThreadFlushTest.cpp)
@@ -138,6 +145,7 @@ quill_add_test(TEST_TagsLogging TagsLoggingTest.cpp)
 quill_add_test(TEST_UnboundedUnlimitedQueue UnboundedUnlimitedQueueTest.cpp)
 quill_add_test(TEST_UserClockSource UserClockSourceTest.cpp)
 quill_add_test(TEST_UserDefinedTypeLoggingDeferredFormatTest UserDefinedTypeLoggingDeferredFormatTest.cpp)
+quill_add_test(TEST_UserDefinedTypeDeferredFormatCopyMove UserDefinedTypeDeferredFormatCopyMoveTest.cpp)
 quill_add_test(TEST_UserDefinedTypeLoggingDirectFormatTest UserDefinedTypeLoggingDirectFormatTest.cpp)
 quill_add_test(TEST_UserDefinedTypeLogging UserDefinedTypeLoggingTest.cpp)
 quill_add_test(TEST_UserSink UserSinkTest.cpp)

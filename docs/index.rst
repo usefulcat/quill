@@ -9,7 +9,7 @@ Quill
 
 Quill is a high-performance asynchronous C++ logging library. It excels in performance-critical applications where every microsecond counts.
 
-`GitHub Repository <http://github.com/odygrd/quill>`_
+  📦 `GitHub Repository <http://github.com/odygrd/quill>`_
 
 .. toctree::
    :maxdepth: 2
@@ -19,6 +19,7 @@ Quill is a high-performance asynchronous C++ logging library. It excels in perfo
    installing
    quick_start
    cheat_sheet
+   faq
 
 .. toctree::
    :maxdepth: 2

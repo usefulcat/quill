@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -659,17 +660,19 @@ private:
   }
 
   /***/
-  static bool _remove_file(fs::path const& filename) noexcept
+  static void _remove_file(fs::path const& filename) noexcept
   {
     std::error_code ec;
-    fs::remove(filename, ec);
 
-    if (ec)
+    fs::file_status const status = fs::status(filename, ec);
+
+    if (ec || status.type() != fs::file_type::regular)
     {
-      return false;
+      // File doesn't exist or is not a regular file
+      return;
     }
 
-    return true;
+    fs::remove(filename, ec);
   }
 
   /***/
@@ -680,7 +683,17 @@ private:
 
     if (ec)
     {
-      return false;
+      // Retry once after a delay - workaround for Windows antivirus locking files
+      // This is a common issue where antivirus software temporarily locks files during scanning
+      std::this_thread::sleep_for(std::chrono::milliseconds{250});
+
+      ec.clear();
+      fs::rename(previous_file, new_file, ec);
+
+      if (ec)
+      {
+        return false;
+      }
     }
 
     return true;

@@ -1,5 +1,7 @@
 .. title:: Cheat Sheet
 
+.. _cheat_sheet:
+
 Cheat Sheet
 ===========
 
@@ -64,7 +66,7 @@ Enables the use of compiler-specific detailed function signatures (such as ``__P
     add_compile_definitions(-DQUILL_IMMEDIATE_FLUSH=0)
 
 Immediate flushing blocks the calling thread until a log message has been written to its destination, effectively simulating synchronous logging.
-This feature can be enabled at runtime on a ``Logger`` instance by calling ``logger->set_immediate_flush(true)``.
+This feature can be enabled at runtime on a ``Logger`` instance by calling ``logger->set_immediate_flush(1)``.
 Setting ``QUILL_ENABLE_IMMEDIATE_FLUSH=0`` in the preprocessor disables this feature completely, eliminating the conditional branch from the hot path and improving performance.
 When disabled at compile time, ``logger->set_immediate_flush(flush_every_n_messages)`` will have no effect.
 
@@ -305,7 +307,9 @@ To log user-defined types, you need to define how they should be serialized or c
        If the object is safe to copy across threads (e.g., does not contain `std::shared_ptr` members being modified), this approach takes a copy of the object and formats it later on the backend logging thread.
 
        - Works for both trivially and non-trivially copyable types.
-       - If the type is **not trivially copyable**, it should have both a **copy constructor** and a **move constructor**.
+       - If the type is **not trivially copyable**, it requires either a **move constructor** or a **copy constructor** (or both).
+       - **Move-only types** (with deleted copy constructors) are supported. Pass them using rvalue references (``std::move()`` or temporaries).
+       - **Copy-only types** (with deleted move constructors) are also supported.
 
     2. **Use DirectFormatCodec**
        Suitable for objects that are not safe to copy across threads (e.g., contain raw pointers, references, or non-copyable resources). This method converts the object to a string immediately in the hot path using `fmt::format`, which increases hot-path latency.
