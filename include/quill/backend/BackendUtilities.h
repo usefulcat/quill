@@ -151,7 +151,7 @@ QUILL_ATTRIBUTE_COLD inline void set_cpu_affinity(QUILL_MAYBE_UNUSED std::vector
   {
     if (cpu_id >= CPU_SETSIZE)
     {
-      QUILL_THROW(QuillError{std::string{"Failed to set cpu affinity - invalid cpu id: "} + std::to_string(cpu_id)});
+      QUILL_THROW(QuillError{std::string{"Failed to set cpu affinity - invalid cpu id: "} + std::to_string(static_cast<unsigned>(cpu_id))});
     }
 
     CPU_SET(cpu_id, &cpuset);
