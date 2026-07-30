@@ -10,6 +10,7 @@
 #include "quill/backend/BackendWorker.h"
 #include "quill/backend/ManualBackendWorker.h"
 #include "quill/core/Attributes.h"
+#include "quill/core/Spinlock.h"
 
 #include <atomic>
 #include <cstdint>
@@ -17,12 +18,22 @@
 
 QUILL_BEGIN_NAMESPACE
 
+QUILL_BEGIN_EXPORT
+
 // Forward declarations
 class Backend;
 class BackendTscClock;
 
+QUILL_END_EXPORT
+
 namespace detail
 {
+
+#if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
+  #pragma warning(push)
+  #pragma warning(disable : 4324)
+#endif
+
 /**
  * Provides access to common collection class that are used by both the frontend and the backend
  * components of the logging system
@@ -102,10 +113,24 @@ private:
   }
 
 private:
+  /***/
+  QUILL_NODISCARD bool is_atexit_registered() const noexcept { return _atexit_registered.load(); }
+
+  /***/
+  void set_atexit_registered() noexcept { _atexit_registered.store(true); }
+
+private:
+  Spinlock _stop_spinlock;
   BackendWorker _backend_worker;
   ManualBackendWorker _manual_backend_worker{&_backend_worker};
   std::atomic<std::once_flag*> _start_once_flag{new std::once_flag};
+  std::atomic<bool> _atexit_registered{false};
 };
+
+#if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
+  #pragma warning(pop)
+#endif
+
 } // namespace detail
 
 QUILL_END_NAMESPACE

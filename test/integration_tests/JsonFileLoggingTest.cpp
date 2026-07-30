@@ -111,8 +111,28 @@ TEST_CASE("json_file_logging")
 
           LOG_INFO(logger, "contains non-printable {npcs}", npcs);
 
+          // Log values that require JSON escaping across all supported branches
+          std::string escaped_chars;
+          escaped_chars += "quote:\"";
+          escaped_chars += " slash:\\";
+          escaped_chars += " backspace:";
+          escaped_chars.push_back('\b');
+          escaped_chars += " formfeed:";
+          escaped_chars.push_back('\f');
+          escaped_chars += " newline:";
+          escaped_chars.push_back('\n');
+          escaped_chars += " carriage:";
+          escaped_chars.push_back('\r');
+          escaped_chars += " tab:";
+          escaped_chars.push_back('\t');
+          escaped_chars += " control:";
+          escaped_chars.push_back('\x01');
+          LOG_INFO(logger, "json escaping {quoted}", escaped_chars);
+
+#if !defined(QUILL_NO_EXCEPTIONS)
           // log an invalid format for testing, only from the first thread
           LOG_INFO(logger, "invalid format [{%f}]", 321.1);
+#endif
 
           // json extras
           LOG_INFO(logger, "A {name} with {type} extras", "message", "json", 1234, "json_extra");
@@ -139,8 +159,15 @@ TEST_CASE("json_file_logging")
   std::vector<std::string> const file_contents = quill::testing::file_contents(json_filename);
   std::vector<std::string> const file_contents_s = quill::testing::file_contents(filename);
 
+#if !defined(QUILL_NO_EXCEPTIONS)
+  REQUIRE_EQ(file_contents.size(), number_of_messages * number_of_threads + 5);
+  // The plain text sink receives the actual newline and carriage-return characters in the
+  // escaped_chars payload, so this file no longer has a stable one-record-per-line count.
+  REQUIRE(file_contents_s.size() >= (number_of_messages * number_of_threads + 5));
+#else
   REQUIRE_EQ(file_contents.size(), number_of_messages * number_of_threads + 4);
-  REQUIRE_EQ(file_contents_s.size(), number_of_messages * number_of_threads + 4);
+  REQUIRE(file_contents_s.size() >= (number_of_messages * number_of_threads + 4));
+#endif
 
   for (size_t i = 0; i < number_of_threads; ++i)
   {
@@ -174,15 +201,23 @@ TEST_CASE("json_file_logging")
     REQUIRE(quill::testing::file_contains(file_contents, expected_no_args_json));
     REQUIRE(quill::testing::file_contains(file_contents_s, expected_no_args_fmt));
 
-    std::string expected_non_printable_json = R"("npcs":"Example\x03String\x04")";
+    std::string expected_non_printable_json = R"("npcs":"Example\\x03String\\x04")";
     std::string expected_non_printable_fmt = "contains non-printable Example\\x03String\\x04";
     REQUIRE(quill::testing::file_contains(file_contents, expected_non_printable_json));
     REQUIRE(quill::testing::file_contains(file_contents_s, expected_non_printable_fmt));
 
+    std::string expected_escaped_json =
+      R"("message":"json escaping {quoted}","quoted":"quote:\" slash:\\ backspace:\\x08 formfeed:\\x0C newline:\n carriage:\r tab:\t control:\\x01")";
+    std::string expected_escaped_fmt = "json escaping quote:\" slash:\\ backspace:";
+    REQUIRE(quill::testing::file_contains(file_contents, expected_escaped_json));
+    REQUIRE(quill::testing::file_contains(file_contents_s, expected_escaped_fmt));
+
+#if !defined(QUILL_NO_EXCEPTIONS)
     std::string expected_invalid_fmt_json = R"("log_level":"INFO","message":"invalid format [{%f}]")";
     std::string expected_invalid_fmt = "invalid format [{%f}]\", location: \"";
     REQUIRE(quill::testing::file_contains(file_contents, expected_invalid_fmt_json));
     REQUIRE(quill::testing::file_contains(file_contents_s, expected_invalid_fmt));
+#endif
 
     std::string expected_extras_json =
       R"("message":"A {name} with {type} extras","name":"message","type":"json","_2":"1234","_3":"json_extra")";

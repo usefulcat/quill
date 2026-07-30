@@ -22,11 +22,28 @@
 
 QUILL_BEGIN_NAMESPACE
 
+QUILL_BEGIN_EXPORT
+
 template <typename... Types>
 struct Codec<std::tuple<Types...>>
 {
+private:
+  using DecodedTuple =
+    std::tuple<decltype(Codec<detail::remove_cvref_t<Types>>::decode_arg(std::declval<std::byte*&>()))...>;
+
+  template <size_t... Indices>
+  static auto decode_arg_impl(std::byte*& buffer, std::index_sequence<Indices...>)
+  {
+    // Strip cv qualifiers so const-qualified element types (e.g. std::tuple<int const, ...>)
+    // decode through the underlying element codecs, matching compute_encoded_size()/encode()
+    // which already decay the element types
+    // Brace initialization preserves left-to-right evaluation of the decode calls.
+    return DecodedTuple{((void)Indices, Codec<detail::remove_cvref_t<Types>>::decode_arg(buffer))...};
+  }
+
+public:
   static size_t compute_encoded_size(detail::SizeCacheVector& conditional_arg_size_cache,
-                                     std::tuple<Types...> const& arg) noexcept
+                                     std::tuple<Types...> const& arg)
   {
     size_t total_size{0};
 
@@ -43,7 +60,7 @@ struct Codec<std::tuple<Types...>>
 
   template <typename Arg>
   static void encode(std::byte*& buffer, detail::SizeCacheVector const& conditional_arg_size_cache,
-                     uint32_t& conditional_arg_size_cache_index, Arg&& arg) noexcept
+                     uint32_t& conditional_arg_size_cache_index, Arg&& arg)
   {
     if constexpr (std::is_rvalue_reference_v<Arg&&>)
     {
@@ -71,65 +88,32 @@ struct Codec<std::tuple<Types...>>
 
   static auto decode_arg(std::byte*& buffer)
   {
-    // Decode elements in order and construct tuple
-    // Note: Function argument evaluation order is unspecified, so we must ensure ordered evaluation
-    std::tuple<decltype(Codec<Types>::decode_arg(buffer))...> arg;
-
-    size_t index = 0;
-    std::apply(
-      [&buffer, &index](auto&... elems)
-      {
-        // Use fold expression with comma operator to ensure left-to-right evaluation
-        (...,
-         (
-           [&buffer, &index, &elems]()
-           {
-             using ElemType = std::decay_t<decltype(elems)>;
-             auto decoded = Codec<ElemType>::decode_arg(buffer);
-
-             if constexpr (std::is_move_assignable_v<ElemType> && std::is_move_constructible_v<decltype(decoded)>)
-             {
-               elems = std::move(decoded);
-             }
-             else
-             {
-               elems = decoded;
-             }
-             ++index;
-           }()));
-      },
-      arg);
-
-    // Use static_cast to explicitly select copy or move based on move constructibility
-    if constexpr (std::conjunction_v<std::is_move_constructible<decltype(Codec<Types>::decode_arg(buffer))>...>)
-    {
-      return arg; // Eligible for move
-    }
-    else
-    {
-      // Force copy construction for tuples with copy-only elements
-      using TupleType = std::tuple<decltype(Codec<Types>::decode_arg(buffer))...>;
-      return static_cast<TupleType const&>(arg);
-    }
+    return decode_arg_impl(buffer, std::index_sequence_for<Types...>{});
   }
 
   static void decode_and_store_arg(std::byte*& buffer, DynamicFormatArgStore* args_store)
   {
-    // Check if all tuple elements are move constructible
-    if constexpr (std::conjunction_v<std::is_move_constructible<decltype(Codec<Types>::decode_arg(buffer))>...>)
+    // Validate the object actually passed to fmt. Checking each element separately is too strict:
+    // a user-provided formatter for the complete tuple can intentionally support elements that
+    // have no standalone formatter. The check lives here rather than at class scope so that
+    // decode-only nested use of this codec does not require a formatter for the tuple itself.
+    static_assert(fmtquill::is_formattable<DecodedTuple, char>::value,
+                  "Codec<std::tuple<Types...>> requires the decoded tuple type to be formattable "
+                  "by bundled fmt");
+
+    if constexpr (std::conjunction_v<std::is_move_constructible<decltype(Codec<detail::remove_cvref_t<Types>>::decode_arg(buffer))>...>)
     {
-      // All elements are move constructible, decode and move
       auto arg = decode_arg(buffer);
       args_store->push_back(std::move(arg));
     }
     else
     {
-      // Some elements are copy-only, decode and copy
-      // Use const auto& to ensure copy construction is used
       auto const arg = decode_arg(buffer);
       args_store->push_back(arg);
     }
   }
 };
+
+QUILL_END_EXPORT
 
 QUILL_END_NAMESPACE

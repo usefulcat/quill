@@ -13,15 +13,28 @@ static constexpr size_t total_iterations = 4'000'000;
  */
 int main()
 {
-  // main thread affinity
-  quill::detail::set_cpu_affinity(0);
+  // main thread affinity - pinning can legitimately fail (e.g. Apple Silicon does not support
+  // the affinity policy); warn and continue instead of terminating the benchmark
+#if defined(QUILL_NO_EXCEPTIONS)
+  quill::detail::set_cpu_affinity({0});
+#else
+  try
+  {
+    quill::detail::set_cpu_affinity({0});
+  }
+  catch (std::exception const& e)
+  {
+    std::cerr << "Failed to set cpu affinity: " << e.what() << std::endl;
+  }
+#endif
 
   quill::BackendOptions backend_options;
-  backend_options.cpu_affinity = 5;
+  backend_options.cpu_affinity = {5};
+  backend_options.sleep_duration = std::chrono::nanoseconds{0};
   backend_options.transit_events_hard_limit = 1;
   backend_options.transit_events_soft_limit = 1;
   backend_options.log_timestamp_ordering_grace_period = std::chrono::microseconds{1};
-  
+
   // Start the logging backend thread and give it some tiem to init
   quill::Backend::start(backend_options);
 

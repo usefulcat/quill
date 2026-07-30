@@ -56,7 +56,7 @@ TEST_CASE("std_unordered_map_logging")
     {
       loopsv.emplace(std::to_string(iter), std::to_string(iter * 2));
     }
-    LOG_INFO(logger, "loopsv {}", loopv);
+    LOG_INFO(logger, "loopsv {}", loopsv);
 
     std::unordered_map<char const*, char const*> ccm = {{"4", "400"}};
     LOG_INFO(logger, "ccm {}", ccm);
@@ -67,8 +67,7 @@ TEST_CASE("std_unordered_map_logging")
     // Test rvalue references with unordered_map
     std::unordered_map<int, std::string> rvalue_unordered_map = {
       {1, "one"}, {2, "two"}, {3, "three"}};
-    LOG_INFO(logger, "rvalue_unordered_map {}",
-             std::move(rvalue_unordered_map));
+    LOG_INFO(logger, "rvalue_unordered_map {}", std::move(rvalue_unordered_map));
 
     // Test with temporary unordered_map
     LOG_INFO(logger, "temp_unordered_map {}",

@@ -3,6 +3,8 @@
 Timestamp Types
 ===============
 
+Use this page to choose between TSC, system, or custom clock sources and understand their trade-offs.
+
 Timestamp Recording
 -------------------
 
@@ -13,7 +15,10 @@ Due to the usage of different types of queues, it is possible in rare cases for 
 For example, the caller thread might block (if a blocking queue is used) or take some time to reallocate a new non-blocking queue.
 
 To mitigate this, there is a configurable :cpp:member:`BackendOptions::log_timestamp_ordering_grace_period` option.
-This option delays the reading of timestamps by the backend for a few microseconds (default 5μs), providing additional time for the frontend to push the messages while maintaining ordering.
+This option delays the reading of timestamps by the backend for a few microseconds (default 5μs), providing additional time for the frontend to push messages and reducing the chance of out-of-order timestamps within that grace window.
+The backend assumes timestamps produced within a single frontend queue are normally non-decreasing.
+If a wall clock or user-provided clock moves backwards, :cpp:member:`BackendOptions::ensure_monotonic_output_timestamps` can be enabled to correct regular log and metric output.
+Backtrace records preserve their original capture timestamps and may still appear out of timestamp order when flushed later.
 
 Timestamp Methods
 -----------------
@@ -42,6 +47,6 @@ Getting a Synchronized Timestamp with the Backend Thread TSC Clock
 In some cases, when using TSC for log statements, you might want to obtain a timestamp that is synchronized with the timestamp seen in the log statements.
 To achieve this, you can use the :cpp:class:`BackendTscClock`. See the example below:
 
-.. literalinclude:: examples/quill_docs_timestamp_types_1.cpp
+.. literalinclude:: snippets/quill_docs_timestamp_types.cpp
    :language: cpp
    :linenos:

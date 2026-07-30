@@ -38,8 +38,7 @@
 
 QUILL_BEGIN_NAMESPACE
 
-/** Forward Declaration **/
-class MacroMetadata;
+QUILL_BEGIN_EXPORT
 
 class ConsoleSinkConfig
 {
@@ -64,7 +63,7 @@ public:
     /**
      * Sets some default colours for terminal
      */
-    void apply_default_colours() noexcept
+    void apply_default_colours()
     {
       assign_colour_to_log_level(LogLevel::TraceL3, white);
       assign_colour_to_log_level(LogLevel::TraceL2, white);
@@ -83,7 +82,7 @@ public:
      * @param log_level the log level
      * @param colour the colour
      */
-    void assign_colour_to_log_level(LogLevel log_level, std::string_view colour) noexcept
+    void assign_colour_to_log_level(LogLevel log_level, std::string_view colour)
     {
       auto const log_lvl = static_cast<uint32_t>(log_level);
       _log_level_colours[log_lvl] = colour;
@@ -200,30 +199,30 @@ public:
 
 #ifdef _WIN32
     /***/
-    QUILL_ATTRIBUTE_COLD void _activate_ansi_support(FILE* file) const
+    QUILL_ATTRIBUTE_COLD bool _activate_ansi_support(FILE* file) const noexcept
     {
       if (!_colour_output_supported)
       {
-        return;
+        return false;
       }
 
       // Try to enable ANSI support for Windows console
       auto const out_handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(file)));
       if (out_handle == INVALID_HANDLE_VALUE)
       {
-        return;
+        return false;
       }
 
       DWORD dw_mode = 0;
       if (!GetConsoleMode(out_handle, &dw_mode))
       {
-        return;
+        return false;
       }
 
       dw_mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
       dw_mode |= ENABLE_PROCESSED_OUTPUT;
 
-      SetConsoleMode(out_handle, dw_mode);
+      return SetConsoleMode(out_handle, dw_mode) != 0;
     }
 #endif
 
@@ -245,12 +244,24 @@ public:
 
 #ifdef _WIN32
       // Enable ANSI color support on Windows
-      _activate_ansi_support(file);
+      if ((colour_mode == ColourMode::Automatic) && !_activate_ansi_support(file))
+      {
+        _colour_output_supported = false;
+      }
+      else if (colour_mode == ColourMode::Always)
+      {
+        static_cast<void>(_activate_ansi_support(file));
+      }
 #endif
     }
 
   private:
-    std::array<std::string_view, 10> _log_level_colours; /**< Colours per log level */
+    static_assert(static_cast<size_t>(LogLevel::None) < LogLevelCount,
+                  "_log_level_colours must be large enough to be indexed by every LogLevel value");
+
+    // Owned strings: assign_colour_to_log_level() accepts runtime-built colour codes and the
+    // backend reads them later, so storing views into caller-owned storage would dangle
+    std::array<std::string, LogLevelCount> _log_level_colours; /**< Colours per log level */
     bool _colours_enabled{true};
     bool _colour_output_supported{false};
   };
@@ -263,7 +274,7 @@ public:
    *
    * @param colours The Colours instance to use.
    */
-  QUILL_ATTRIBUTE_COLD void set_colours(Colours colours) { _colours = colours; }
+  QUILL_ATTRIBUTE_COLD void set_colours(Colours colours) { _colours = std::move(colours); }
 
   /**
    * @brief Sets the colour mode for console output.
@@ -310,7 +321,7 @@ public:
   }
 
   /** Getters **/
-  QUILL_NODISCARD Colours const& colours() noexcept { return _colours; }
+  QUILL_NODISCARD Colours const& colours() const noexcept { return _colours; }
   QUILL_NODISCARD ColourMode colour_mode() const noexcept { return _colour_mode; }
   QUILL_NODISCARD std::string const& stream() const noexcept { return _stream; }
   QUILL_NODISCARD std::optional<PatternFormatterOptions> const& override_pattern_formatter_options() const noexcept
@@ -341,8 +352,11 @@ public:
                  std::move(file_event_notifier)},
       _config(config)
   {
-    QUILL_ASSERT(_config.stream() == "stdout" || config.stream() == "stderr",
-                 "Invalid stream name in ConsoleSink constructor, must be 'stdout' or 'stderr'");
+    if (QUILL_UNLIKELY(_config.stream() != "stdout" && _config.stream() != "stderr"))
+    {
+      QUILL_THROW(
+        QuillError{"Invalid stream name in ConsoleSink constructor, must be 'stdout' or 'stderr'"});
+    }
 
     if (_config.colour_mode() == ConsoleSinkConfig::ColourMode::Never)
     {
@@ -380,20 +394,50 @@ public:
                                      std::vector<std::pair<std::string, std::string>> const* named_args,
                                      std::string_view log_message, std::string_view log_statement) override
   {
+    if (QUILL_UNLIKELY(!_file))
+    {
+      return;
+    }
+
     if (_config.colours().colours_enabled())
     {
+      // Apply the user callback to the original statement exactly once and determine newline
+      // placement from the transformed result.
+      std::string transformed_statement;
+      std::string_view statement = log_statement;
+      if (_file_event_notifier.before_write)
+      {
+        transformed_statement = _file_event_notifier.before_write(log_statement);
+        statement = transformed_statement;
+      }
+
+      // Reset the colour before the trailing newline, not after it. Terminals with background
+      // colour erase fill the remainder of the row with the active background colour when the
+      // newline is written, so background colours (e.g. the default Critical bold_on_red)
+      // would bleed to the end of the line
+      bool const has_trailing_newline = !statement.empty() && (statement.back() == '\n');
+
+      if (has_trailing_newline)
+      {
+        statement.remove_suffix(1);
+      }
+
       // Write colour code
       std::string_view const colour_code = _config.colours().log_level_colour(log_level);
       safe_fwrite(colour_code.data(), sizeof(char), colour_code.size(), _file);
 
-      // Write record to file
-      StreamSink::write_log(log_metadata, log_timestamp, thread_id, thread_name, process_id,
-                            logger_name, log_level, log_level_description, log_level_short_code,
-                            named_args, log_message, log_statement);
+      // Write the transformed record directly so before_write is not invoked a second time.
+      _write_statement(statement);
 
       // Reset colour code
       safe_fwrite(ConsoleSinkConfig::Colours::reset.data(), sizeof(char),
                   ConsoleSinkConfig::Colours::reset.size(), _file);
+
+      if (has_trailing_newline)
+      {
+        safe_fwrite("\n", sizeof(char), 1, _file);
+        ++_file_size;
+      }
     }
     else
     {
@@ -408,5 +452,7 @@ protected:
   // protected in case someone wants to derive from this class and create a custom one, e.g. for json logging to stdout
   ConsoleSinkConfig _config;
 };
+
+QUILL_END_EXPORT
 
 QUILL_END_NAMESPACE

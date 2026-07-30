@@ -26,6 +26,7 @@ jobs:
     # windows-2016 and windows-2019 have MSVC 2017 and 2019 installed
     # respectively: https://github.com/actions/virtual-environments.
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       matrix:
         os: [ windows-2022 ]
@@ -51,7 +52,7 @@ jobs:
             with_tests: "OFF"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Create Build Environment
         run: cmake -E make_directory ${{runner.workspace}}/build
@@ -78,6 +79,7 @@ jobs:
 
   mingw:
     runs-on: windows-2022
+    timeout-minutes: 60
     defaults:
       run:
         shell: msys2 {0}
@@ -93,7 +95,7 @@ jobs:
           release: false
           msystem: ${{matrix.sys}}
           pacboy: cc:p cmake:p ninja:p
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure
         run: cmake -B ../build -DCMAKE_BUILD_TYPE=${{matrix.build_type}} -DCMAKE_CXX_STANDARD=${{matrix.std}} -DQUILL_BUILD_TESTS=${{matrix.with_tests}} -DQUILL_BUILD_EXAMPLES=ON -DQUILL_VERBOSE_MAKEFILE=ON
       - name: Build

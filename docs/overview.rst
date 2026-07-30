@@ -1,16 +1,40 @@
 .. title:: Overview
 
+.. _overview:
+
 Overview
 ========
 
-The library adopts asynchronous logging to optimise performance, particularly well-suited for low-latency applications where minimizing hot path latency is crucial, such as trading systems.
+Quill is an asynchronous logging library built for C++ applications where **every nanosecond on
+the hot path matters** — trading systems, real-time engines, game servers, low-latency network
+stacks, and similar workloads.
 
-A dedicated backend thread manages log formatting and I/O operations, ensuring that even occasional log statements incur minimal overhead.
+Quill also lets you **publish metric samples to an external metrics backend** (Prometheus,
+StatsD, OpenTelemetry, or any in-process collector) through the same asynchronous pipeline used
+for logs, so hot threads never pay for metric formatting or export either. Quill is not a
+metrics collection or exposition system itself — it is the low-latency transport that hands
+samples off to whichever metrics backend your sink targets.
+
+A dedicated backend worker handles log formatting, metric forwarding, and I/O, so even the
+slowest log line never blocks a hot thread on string conversion or disk writes. The frontend
+only captures a binary copy of the arguments (or a compact metric sample) into a thread-local
+lock-free queue; the backend does the rest.
+
+At a glance:
+
+- **Frontend:** captures metadata and a binary copy of log arguments, or a compact metric sample, on the calling thread.
+- **Backend:** formats log messages and forwards metric samples on a dedicated worker thread.
+- **Ordering:** a single worker processes cached events by timestamp across all active queues and uses a configurable grace period to reduce cross-thread timestamp reordering without per-call locking.
+- **Extensibility:** sinks can handle logs, metrics, or both — the built-in library covers files, consoles, rotation, JSON, Syslog/systemd, Android, and Prometheus, and custom sinks plug in through a narrow virtual interface.
+
+.. image:: design.drawio.svg
+   :alt: Quill design overview
+   :width: 95%
 
 Thread Safety
 -------------
 
-:cpp:class:`Logger` is thread safe by default. The same instance can be used to log by any thread.
+:cpp:type:`Logger` is thread safe by default. The same instance can be used to log by any thread.
 Any thread can safely modify the active log level of the logger.
 
 Logging types
@@ -20,17 +44,31 @@ For primitive types, ``std::string``, and ``std::string_view``, the library will
 For standard library types you need to include the relevant file under the ``quill/std`` folder.
 For user-defined types you can provide a ``Codec`` specialization to serialize the type or alternatively convert the type to a string on the hot path for non-latency-sensitive code.
 
+See :doc:`Recipes <recipes>` for examples of logging STL types and user-defined types.
+
+Metrics
+-------
+
+Quill can publish pre-registered metric samples through the same backend worker used for logs.
+Metric metadata is registered once and then reused by pointer on each publish call, so hot threads
+only enqueue a compact fixed-size sample record.
+
+Metric-capable sinks receive samples through :cpp:func:`Sink::write_metric`. The bundled
+``PrometheusSink`` is one option, but the metric API itself is backend-agnostic, so custom sinks
+can push metrics to any service or in-process collector you want.
+
 Reliable Logging Mechanism
 --------------------------
 
-Quill utilizes a thread-local single-producer-single-consumer queue to relay logs to the backend thread, ensuring that log messages are never dropped.
-Initially, an unbounded queue with a small size is used to optimise performance.
+Quill utilizes a thread-local single-producer-single-consumer queue to relay log and metric events to the backend thread.
+By default, it uses an unbounded blocking queue with a small initial size to optimise performance.
 However, if the queue reaches its capacity, a new queue will be allocated, which may cause a slight performance penalty for the frontend.
 
-The default unbounded queue can expand up to a size of `FrontendOptions::unbounded_queue_max_capacity`. If this limit is reached, the caller thread will block.
+The default unbounded queue can expand up to a size of `FrontendOptions::unbounded_queue_max_capacity`. If this limit is reached, the caller thread will block instead of intentionally dropping events.
 It's possible to change the queue type within the :cpp:class:`FrontendOptions`.
 
 The queue size and type are configurable by providing a custom :cpp:class:`FrontendOptions` class.
+See :doc:`Frontend Options <frontend_options>` for details.
 
 Manual Log Flushing
 -------------------
@@ -52,21 +90,46 @@ Handling Application Crashes
 
 During normal program termination, the library ensures all messages are logged as it goes through the ``BackendWorker`` destructor.
 
-However, in the event of an application crash, some log messages may be lost.
+However, in the event of an application crash, some log messages may still be lost.
 
-To prevent message loss during crashes caused by signal interrupts, users should set up a signal handler and invoke :cpp:func:`LoggerImpl::flush_log` within it.
+The library provides an optional built-in signal handler that can help preserve logs in many common crash and termination scenarios. It can be enabled by passing :cpp:struct:`SignalHandlerOptions` to :cpp:func:`Backend::start`.
 
-The library provides a built-in signal handler that ensures crash-safe behavior, which can be enabled via passing :cpp:struct:`SignalHandlerOptions` to :cpp:func:`Backend::start`.
+.. code-block:: cpp
+
+   quill::Backend::start(quill::BackendOptions{}, quill::SignalHandlerOptions{});
+
+On POSIX systems, any thread that may run the built-in handler should either:
+
+- have already logged at least once,
+- have called :cpp:func:`FrontendImpl::preallocate`, or
+- have the handled signals blocked so the handler does not run on that thread.
+
+If you use your own POSIX signal handler, keep it minimal and avoid calling the general logging or flush APIs from an arbitrary signal context unless you have validated that approach for your platform and process state.
+
+:cpp:struct:`SignalHandlerOptions` allows you to configure:
+
+- ``catchable_signals`` — the list of signals to handle (defaults to ``SIGTERM``, ``SIGINT``, ``SIGABRT``, ``SIGFPE``, ``SIGILL``, ``SIGSEGV``).
+- ``timeout_seconds`` — alarm timeout to prevent the process from hanging in the signal handler (Linux only, defaults to 20 seconds).
+- ``logger_name`` — the logger to use for crash reporting. If empty, the signal handler automatically selects the first valid logger.
+- ``excluded_logger_substrings`` — logger names containing these substrings are skipped during automatic selection (defaults to ``{"__csv__"}``).
+
+On Windows, ``Backend::start()`` installs structured exception handling and a process-wide
+console control handler. CRT signal handlers are thread-specific; call
+``quill::init_signal_handler<FrontendOptions>()`` on each frontend/user thread that needs CRT
+signal handling. Do not install the CRT signal handler on the backend worker thread.
 
 Log Messages Timestamp Order
 ----------------------------
 
-The library employs a single worker backend thread that orders log messages from all queues by timestamp before printing them to the log file.
+The library employs a single worker backend thread that processes cached log messages from all queues by timestamp before printing them to the log file. A configurable timestamp-ordering grace period gives frontend threads a short window to publish already-timestamped events, reducing cross-thread timestamp reordering.
 
 Number of Backend Threads
 -------------------------
 
 Quill prioritizes low latency over high throughput, hence it utilizes only one backend thread to process all logs efficiently. Multiple backend threads are not supported.
+
+Starting and stopping the backend from different threads at the same time is also unsupported. Call
+``Backend::start()`` and ``Backend::stop()`` in a coordinated way rather than concurrently.
 
 Latency of the First Log Message
 --------------------------------
@@ -112,14 +175,34 @@ When invoking a ``LOG_`` macro:
 | Args...    | A serialized binary copy of each log message argument that was passed to the ``LOG_`` macro                   |
 +------------+---------------------------------------------------------------------------------------------------------------+
 
+When invoking ``METRIC(...)`` or :cpp:func:`LoggerImpl::publish_metric`:
+
+1. Reuses previously registered ``MetricMetadata`` instead of serializing metric names or labels on the hot path.
+
+2. Pushes a compact fixed-size sample record to the same SPSC queue.
+
++-----------------+------------------------------------------------------+
+| Variable        | Description                                          |
++=================+======================================================+
+| timestamp       | Current timestamp                                    |
++-----------------+------------------------------------------------------+
+| MetricMetadata* | Pointer to the registered metric metadata            |
++-----------------+------------------------------------------------------+
+| Logger*         | Pointer to the logger instance                       |
++-----------------+------------------------------------------------------+
+| value           | The ``double`` metric sample                         |
++-----------------+------------------------------------------------------+
+
 Backend
 -------
 
-The backend consists of a single backend thread which takes care of formatting the log statements and the IO writing to files.
-Consumes each message from the SPSC queue, retrieves all the necessary information, and then formats the message.
-Subsequently, forwards the log message to all ``Sinks`` associated with the Logger.
+The backend consists of a single backend thread which takes care of formatting log statements, forwarding metric samples, and performing the IO writing to files.
+Consumes each event from the SPSC queue, retrieves all the necessary information, and then formats log messages or forwards metric samples to ``Sink::write_metric``.
+Subsequently, forwards the log or metric event to all ``Sinks`` associated with the Logger.
 
-Design
-------
+See Also
+--------
 
-.. image:: design.jpg
+- :doc:`Quick Start <quick_start>` for the shortest path to working logs.
+- :doc:`Guides <guides>` for sinks, metrics, formatters, JSON, filters, and more.
+- :doc:`Recipes <recipes>` for common tasks and code examples.

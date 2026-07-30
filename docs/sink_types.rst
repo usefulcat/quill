@@ -3,6 +3,8 @@
 Sink Types
 ==========
 
+Reference for all built-in sink implementations. See :doc:`Sinks <sinks>` for how to create, share, and extend sinks.
+
 ConsoleSink
 ~~~~~~~~~~~
 
@@ -15,14 +17,41 @@ The :cpp:class:`FileSink` is a straightforward sink that outputs to a file. The 
 
 Each file can only have a single instance of `FileSink`.
 
-.. literalinclude:: examples/quill_docs_example_file.cpp
+.. note::
+
+   When using :cpp:class:`FileEventNotifier` with :cpp:class:`FileSink`, the callback handle type is
+   platform-dependent and is exposed as ``quill::FileEventNotifierHandle``. On Windows it is a native
+   ``HANDLE``. On other platforms it is a ``FILE*``.
+
+   ``before_write`` runs as part of normal log writing. ``before_open``, ``after_open``,
+   ``before_close``, and ``after_close`` run on whichever thread performs the file open/close
+   operation. Different callbacks, and different invocations of the same callback, may therefore
+   run on different threads over the sink lifetime. Callbacks must be thread-safe and must not
+   assume a single calling thread. When ``before_write`` changes the message size, size-based
+   rotation evaluates its threshold using the pre-transform size of the current message, so a
+   rotation can trigger up to one transformed message later or earlier than the exact limit.
+
+.. literalinclude:: snippets/quill_docs_example_file.cpp
    :language: cpp
    :linenos:
 
 RotatingFileSink
 ~~~~~~~~~~~~~~~~
 
-The :cpp:class:`RotatingFileSink` is built on top of the `FileSink` and provides log file rotation based on specified time intervals, file sizes, or daily schedules.
+The :cpp:type:`RotatingFileSink` is built on top of the `FileSink` and provides log file rotation based on specified time intervals, file sizes, or daily schedules.
+
+.. note::
+
+   When the sink starts in append mode, rotated files left behind by previous runs are detected
+   for every ``RotationNamingScheme`` and count towards ``max_backup_files`` whether or not the
+   base filename has an extension; the oldest ones are removed on startup if they exceed the
+   limit, so log files do not accumulate across restarts. Set
+   ``set_overwrite_rolled_files(false)`` to prevent append-mode recovery from deleting existing
+   rotated files, or use ``FilenameAppendOption::StartDateTime`` to give each run its own
+   independent set of files.
+
+   If the startup directory cannot be enumerated safely, existing rotated files are left untouched
+   and rotation is disabled for that sink instance. Writes to the active file continue normally.
 
 .. literalinclude:: ../examples/rotating_file_logging.cpp
    :language: cpp
@@ -31,14 +60,14 @@ The :cpp:class:`RotatingFileSink` is built on top of the `FileSink` and provides
 JsonFileSink/JsonConsoleSink
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. literalinclude:: examples/quill_docs_example_json_logging.cpp
+.. literalinclude:: snippets/quill_docs_example_json_logging.cpp
    :language: cpp
    :linenos:
 
 RotatingJsonFileSink
 ~~~~~~~~~~~~~~~~~~~~
 
-The :cpp:class:`RotatingJsonFileSink` is built on top of the `JsonFileSink` and provides log file rotation based on specified time intervals, file sizes, or daily schedules.
+The :cpp:type:`RotatingJsonFileSink` is built on top of the `JsonFileSink` and provides log file rotation based on specified time intervals, file sizes, or daily schedules.
 
 .. literalinclude:: ../examples/rotating_json_file_logging.cpp
    :language: cpp
@@ -49,20 +78,18 @@ SyslogSink
 
 The :cpp:class:`SyslogSink` leverages the syslog API to send messages.
 
-SystemdSink
-~~~~~~~~~~~
+.. note::
 
-The :cpp:class:`SystemdSink` sends log messages to systemd's journal using the systemd journal API, providing structured logging with systemd metadata.
-
-StreamSink
-~~~~~~~~~~
+   Syslog uses process-global state. Multiple :cpp:class:`SyslogSink` instances are therefore not
+   independent if they use different identifiers, options, or facilities. Use a single
+   :cpp:class:`SyslogSink` configuration per process.
 
 StreamSink
 ~~~~~~~~~~
 
 The :cpp:class:`StreamSink` is a base sink class used to write log messages to C-style ``FILE*`` streams, such as 
 ``stdout``, ``stderr``, or files opened with ``fopen``.
-It is typically used as a foundation for higher-level sinks like :cpp:class:`FileSink` and :cpp:class:`ConsoleSink`.
+It is typically used as a foundation for higher-level sinks like :cpp:class:`ConsoleSink`.
 
 AndroidSink
 ~~~~~~~~~~~
@@ -188,5 +215,5 @@ The :cpp:class:`SystemdSink` integrates with the systemd journal, allowing messa
       quill::Logger* logger = quill::Frontend::create_or_get_logger("root", std::move(sink));
 
       QUILL_LOG_INFO(logger, "A {} message with number {}", "log", 1);
-      QUILL_LOG_WARNING(logger, "test lol {}", 123);
+      QUILL_LOG_WARNING(logger, "test message {}", 123);
     }

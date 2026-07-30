@@ -2,14 +2,16 @@
 #include "misc/DocTestExtensions.h"
 
 #include "quill/core/BoundedSPSCQueue.h"
+#include "quill/core/QuillError.h"
 
 #include <cstring>
+#include <limits>
 #include <thread>
 #include <vector>
 
 #if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
-#pragma warning(push)
-#pragma warning(disable : 4996)
+  #pragma warning(push)
+  #pragma warning(disable : 4996)
 #endif
 
 TEST_SUITE_BEGIN("BoundedQueue");
@@ -139,8 +141,76 @@ TEST_CASE("bounded_queue_read_write_multithreaded_plain_ints")
   consumer_thread.join();
 }
 
+TEST_CASE("bounded_queue_prepare_write_larger_than_capacity_fails")
+{
+  BoundedSPSCQueue buffer{64u};
+
+  REQUIRE_EQ(buffer.capacity(), 64u);
+  REQUIRE_EQ(buffer.prepare_write(65u), nullptr);
+  REQUIRE_EQ(buffer.prepare_write(128u), nullptr);
+
+  std::byte* write_buf = buffer.prepare_write(32u);
+  REQUIRE_NE(write_buf, nullptr);
+  buffer.finish_write(32u);
+  buffer.commit_write();
+
+  std::byte* read_buf = buffer.prepare_read();
+  REQUIRE_NE(read_buf, nullptr);
+  buffer.finish_read(32u);
+  buffer.commit_read();
+
+  REQUIRE_EQ(buffer.prepare_write(65u), nullptr);
+  REQUIRE_EQ(buffer.prepare_write(128u), nullptr);
+}
+
+TEST_CASE("bounded_queue_write_after_drain_uses_full_capacity")
+{
+  // default reader_store_percent 5 -> the reader publishes its position every 204 bytes
+  BoundedSPSCQueue buffer{4096u};
+
+  // consume a message smaller than the publish batch, draining the queue
+  std::byte* write_buf = buffer.prepare_write(100u);
+  REQUIRE_NE(write_buf, nullptr);
+  buffer.finish_write(100u);
+  buffer.commit_write();
+
+  std::byte* read_buf = buffer.prepare_read();
+  REQUIRE_NE(read_buf, nullptr);
+  buffer.finish_read(100u);
+  buffer.commit_read();
+
+  // the queue is empty; a message that fits in the capacity must be writable. If the reader
+  // position was not published on drain, the producer permanently sees only (capacity - 100)
+  // free bytes and this write can never succeed
+  REQUIRE_EQ(buffer.prepare_read(), nullptr);
+  REQUIRE_NE(buffer.prepare_write(4000u), nullptr);
+}
+
+#if defined(QUILL_X86ARCH) && !defined(QUILL_NO_EXCEPTIONS)
+TEST_CASE("below_minimum_capacity_throws_before_allocating")
+{
+  // On x86 the constructor requires at least 1024 bytes so that cache-line warmup via
+  // _mm_prefetch has enough backing memory. The capacity check must run in the member
+  // initialiser list BEFORE mmap/aligned_malloc happens, otherwise the allocation would
+  // leak (the destructor does not run on a partially-constructed object).
+  REQUIRE_THROWS_AS(BoundedSPSCQueue{512u}, quill::QuillError);
+  REQUIRE_THROWS_AS(BoundedSPSCQueue{1023u}, quill::QuillError);
+
+  // Exactly 1024 is the documented minimum and must succeed.
+  REQUIRE_NOTHROW(BoundedSPSCQueue{1024u});
+}
+#endif
+
+#if !defined(QUILL_NO_EXCEPTIONS)
+TEST_CASE("oversized_capacity_throws_before_allocating")
+{
+  size_t constexpr oversized_capacity = (std::numeric_limits<size_t>::max() / 2u) + 1u;
+  REQUIRE_THROWS_AS(BoundedSPSCQueue{oversized_capacity}, quill::QuillError);
+}
+#endif
+
 TEST_SUITE_END();
 
 #if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
-#pragma warning(pop)
+  #pragma warning(pop)
 #endif

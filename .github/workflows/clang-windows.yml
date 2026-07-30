@@ -24,13 +24,14 @@ on:
 jobs:
   clang_msvc:
     runs-on: windows-2022
+    timeout-minutes: 60
     strategy:
       matrix:
         compiler: [ clang-cl ]
         build_type: [ Debug, Release ]
         std: [ 17 ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install LLVM
         uses: KyleMayes/install-llvm-action@v2

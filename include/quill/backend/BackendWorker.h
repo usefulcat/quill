@@ -10,6 +10,7 @@
   #include "quill/backend/Utf8Conv.h"
 #endif
 
+#include "quill/backend/BackendMdcState.h"
 #include "quill/backend/BackendOptions.h"
 #include "quill/backend/BackendUtilities.h"
 #include "quill/backend/BackendWorkerLock.h"
@@ -31,9 +32,11 @@
 #include "quill/core/LoggerManager.h"
 #include "quill/core/MacroMetadata.h"
 #include "quill/core/MathUtilities.h"
+#include "quill/core/Metric.h"
 #include "quill/core/QuillError.h"
 #include "quill/core/SinkManager.h"
 #include "quill/core/ThreadContextManager.h"
+#include "quill/core/ThreadPrimitives.h"
 #include "quill/core/TimeUtilities.h"
 #include "quill/core/UnboundedSPSCQueue.h"
 #include "quill/sinks/Sink.h"
@@ -64,14 +67,16 @@
 
 QUILL_BEGIN_NAMESPACE
 
+QUILL_BEGIN_EXPORT
 class ManualBackendWorker; // Forward declaration
+QUILL_END_EXPORT
 
 namespace detail
 {
 
 #if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
-#pragma warning(push)
-#pragma warning(disable : 4324)
+  #pragma warning(push)
+  #pragma warning(disable : 4324)
 #endif
 
 class BackendWorker
@@ -95,9 +100,7 @@ public:
   {
     // This destructor will run during static destruction as the thread is part of the singleton
     stop();
-
-    RdtscClock const* rdtsc_clock = _rdtsc_clock.exchange(nullptr);
-    delete rdtsc_clock;
+    _rdtsc_clock.store(nullptr, std::memory_order_release);
   }
 
   /***/
@@ -111,7 +114,7 @@ public:
    */
   QUILL_NODISCARD uint64_t time_since_epoch(uint64_t rdtsc_value) const
   {
-    if (QUILL_UNLIKELY(_options.sleep_duration > _options.rdtsc_resync_interval))
+    if (QUILL_UNLIKELY(!_is_rdtsc_clock_config_valid.load(std::memory_order_relaxed)))
     {
       QUILL_THROW(
         QuillError{"Invalid config, When TSC clock is used backend_thread_sleep_duration should "
@@ -131,6 +134,60 @@ public:
     return _worker_thread_id.load();
   }
 
+  /***/
+  QUILL_ATTRIBUTE_COLD static void validate_options(BackendOptions const& options)
+  {
+    if (options.sleep_duration.count() < 0)
+    {
+      QUILL_THROW(QuillError{"BackendOptions::sleep_duration must not be negative"});
+    }
+
+    if (options.log_timestamp_ordering_grace_period.count() < 0)
+    {
+      QUILL_THROW(
+        QuillError{"BackendOptions::log_timestamp_ordering_grace_period must not be negative"});
+    }
+
+    if (options.rdtsc_resync_interval.count() < 0)
+    {
+      QUILL_THROW(QuillError{"BackendOptions::rdtsc_resync_interval must not be negative"});
+    }
+
+    if (options.sink_min_flush_interval.count() < 0)
+    {
+      QUILL_THROW(QuillError{"BackendOptions::sink_min_flush_interval must not be negative"});
+    }
+
+    (void)BackendMdcState{options.mdc_format_pattern};
+
+    size_t const soft_limit = (options.transit_events_soft_limit == 0) ? 1 : options.transit_events_soft_limit;
+    size_t const hard_limit = (options.transit_events_hard_limit == 0) ? 1 : options.transit_events_hard_limit;
+
+    if (soft_limit > hard_limit)
+    {
+      QUILL_THROW(QuillError{fmtquill::format(
+        "transit_events_soft_limit ({}) cannot be greater than transit_events_hard_limit "
+        "({}). Please ensure that the soft limit is less than or equal to the hard limit.",
+        soft_limit, hard_limit)});
+    }
+
+    if (!is_power_of_two(hard_limit))
+    {
+      QUILL_THROW(QuillError{
+        fmtquill::format("transit_events_hard_limit ({}) must be a power of two", hard_limit)});
+    }
+
+    size_t const requested_initial_capacity = static_cast<size_t>(options.transit_event_buffer_initial_capacity);
+    size_t const rounded_initial_capacity = next_power_of_two(requested_initial_capacity);
+    if ((requested_initial_capacity > hard_limit) || (rounded_initial_capacity > hard_limit))
+    {
+      QUILL_THROW(QuillError{fmtquill::format(
+        "transit_event_buffer_initial_capacity ({}, rounded to {}) cannot be greater than "
+        "transit_events_hard_limit ({})",
+        options.transit_event_buffer_initial_capacity, rounded_initial_capacity, hard_limit)});
+    }
+  }
+
   /**
    * Starts the backend worker thread
    * @throws std::runtime_error, std::system_error on failures
@@ -139,7 +196,11 @@ public:
   {
     _ensure_linker_retains_symbols();
 
+    _has_worker_thread_exited.store(false);
+
     _process_id = std::to_string(get_process_id());
+
+    validate_options(options);
 
     if (options.check_backend_singleton_instance)
     {
@@ -149,19 +210,40 @@ public:
     std::thread worker(
       [this, options]()
       {
-        _init(options);
+        QUILL_TRY { _init(options); }
+#if !defined(QUILL_NO_EXCEPTIONS)
+        QUILL_CATCH(std::exception const& e)
+        {
+          _notify_error(options.error_notifier, e.what());
+          std::terminate();
+        }
+        QUILL_CATCH_ALL()
+        {
+          _notify_error(options.error_notifier,
+                        std::string{"Caught unhandled exception during backend initialization."});
+          std::terminate();
+        }
+#endif
 
         QUILL_TRY
         {
-          if (_options.cpu_affinity != (std::numeric_limits<uint16_t>::max)())
+          if (!_options.cpu_affinity.empty())
           {
-            // Set cpu affinity if requested to cpu _backend_thread_cpu_affinity
+            // Set cpu affinity if requested
             set_cpu_affinity(_options.cpu_affinity);
           }
         }
 #if !defined(QUILL_NO_EXCEPTIONS)
-        QUILL_CATCH(std::exception const& e) { _options.error_notifier(e.what()); }
-        QUILL_CATCH_ALL() { _options.error_notifier(std::string{"Caught unhandled exception."}); }
+        // The backend continues running without the affinity, prefix as a warning
+        QUILL_CATCH(std::exception const& e)
+        {
+          _notify_error(_options.error_notifier, _get_local_time_str() + " Quill WARNING: " + e.what());
+        }
+        QUILL_CATCH_ALL()
+        {
+          _notify_error(_options.error_notifier,
+                        _get_local_time_str() + " Quill WARNING: Caught unhandled exception.");
+        }
 #endif
 
         QUILL_TRY
@@ -170,8 +252,16 @@ public:
           set_thread_name(_options.thread_name.data());
         }
 #if !defined(QUILL_NO_EXCEPTIONS)
-        QUILL_CATCH(std::exception const& e) { _options.error_notifier(e.what()); }
-        QUILL_CATCH_ALL() { _options.error_notifier(std::string{"Caught unhandled exception."}); }
+        // The backend continues running without the thread name, prefix as a warning
+        QUILL_CATCH(std::exception const& e)
+        {
+          _notify_error(_options.error_notifier, _get_local_time_str() + " Quill WARNING: " + e.what());
+        }
+        QUILL_CATCH_ALL()
+        {
+          _notify_error(_options.error_notifier,
+                        _get_local_time_str() + " Quill WARNING: Caught unhandled exception.");
+        }
 #endif
 
         // All okay, set the backend worker thread running flag
@@ -183,23 +273,33 @@ public:
           // main loop
           QUILL_TRY { _poll(); }
 #if !defined(QUILL_NO_EXCEPTIONS)
-          QUILL_CATCH(std::exception const& e) { _options.error_notifier(e.what()); }
+          QUILL_CATCH(std::exception const& e) { _notify_error(_options.error_notifier, e.what()); }
           QUILL_CATCH_ALL()
           {
-            _options.error_notifier(std::string{"Caught unhandled exception."});
-          } // clang-format on
+            _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
+          }
 #endif
         }
+
+        // Synchronise with BackendWorker::stop() before tearing down backend-owned state. The loop
+        // above intentionally uses a relaxed load on the hot path; this acquire load is cold and
+        // pairs with stop()'s exchange(false) so Quill API calls sequenced-before stop()
+        // happen-before _exit() tears down the active backend state.
+        QUILL_MAYBE_UNUSED bool const stopped = _is_worker_running.load(std::memory_order_acquire);
+        QUILL_ASSERT(!stopped,
+                     "Backend worker should only exit after stop() clears the running flag");
 
         // exit
         QUILL_TRY { _exit(); }
 #if !defined(QUILL_NO_EXCEPTIONS)
-        QUILL_CATCH(std::exception const& e) { _options.error_notifier(e.what()); }
+        QUILL_CATCH(std::exception const& e) { _notify_error(_options.error_notifier, e.what()); }
         QUILL_CATCH_ALL()
         {
-          _options.error_notifier(std::string{"Caught unhandled exception."});
-        } // clang-format on
+          _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
+        }
 #endif
+
+        _has_worker_thread_exited.store(true);
       });
 
     // Move the worker ownership to our class
@@ -208,7 +308,7 @@ public:
     while (!_is_worker_running.load(std::memory_order_seq_cst))
     {
       // wait for the thread to start
-      std::this_thread::sleep_for(std::chrono::microseconds{100});
+      detail::sleep_for_ns(100'000ull); // 100 us
     }
   }
 
@@ -233,8 +333,37 @@ public:
       _worker_thread.join();
     }
 
+    if (!_has_worker_thread_exited.load())
+    {
+      // The backend thread was terminated externally without completing its exit sequence.
+      // This can happen on Windows when Quill is used inside a DLL
+      // Drain any remaining log messages on this thread as a best-effort fallback.
+      QUILL_TRY { _exit(); }
+#if !defined(QUILL_NO_EXCEPTIONS)
+      QUILL_CATCH(std::exception const& e) { _notify_error(_options.error_notifier, e.what()); }
+      QUILL_CATCH_ALL()
+      {
+        _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
+      }
+#endif
+    }
+
     _worker_thread_id.store(0);
     _backend_worker_lock.reset(nullptr);
+
+    // Release scratch state owned by the worker so a subsequent start() begins from a clean
+    // slate and we don't hold on to memory grown during the previous run. The frontend queues,
+    // sinks, and loggers themselves are owned by the singleton managers and intentionally
+    // survive restarts; only the worker's own scratch state is freed here. The worker thread
+    // has already joined above so these members are not concurrently accessed. Reassigning
+    // from a fresh empty instance both clears the contents and releases any reserved capacity.
+    _named_args_templates = {};
+    _logger_removal_flags = {};
+    _removed_loggers = {};
+    _active_thread_contexts_cache = {};
+    _active_sinks_cache = {};
+    _named_args_format_template = {};
+    _format_args_store = DynamicFormatArgStore{};
   }
 
   /**
@@ -262,6 +391,61 @@ public:
   }
 
 private:
+  /***/
+  QUILL_ATTRIBUTE_HOT void _invoke_poll_hook(std::function<void()> const& hook) const
+  {
+    QUILL_TRY { hook(); }
+#if !defined(QUILL_NO_EXCEPTIONS)
+    QUILL_CATCH(std::exception const& e) { _notify_error(_options.error_notifier, e.what()); }
+    QUILL_CATCH_ALL()
+    {
+      _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
+    }
+#endif
+  }
+
+  /***/
+  QUILL_ATTRIBUTE_HOT void _invoke_poll_end_once(bool& poll_end_called) const
+  {
+    if (poll_end_called)
+    {
+      return;
+    }
+
+    poll_end_called = true;
+    _invoke_poll_hook(_options.backend_worker_on_poll_end);
+  }
+
+  /**
+   * Formats the current local time as "HH:MM:SS", matching the prefix used by the
+   * "Quill INFO:" queue notifications
+   */
+  QUILL_NODISCARD static std::string _get_local_time_str()
+  {
+    char ts[24];
+    time_t t = time(nullptr);
+    tm p;
+    localtime_rs(std::addressof(t), std::addressof(p));
+    strftime(ts, 24, "%X", std::addressof(p));
+    return std::string{ts};
+  }
+
+  template <typename TMessage>
+  static void _notify_error(std::function<void(std::string const&)> const& error_notifier, TMessage&& message)
+  {
+    if (static_cast<bool>(error_notifier))
+    {
+      QUILL_TRY { error_notifier(static_cast<TMessage&&>(message)); }
+#if !defined(QUILL_NO_EXCEPTIONS)
+      QUILL_CATCH_ALL()
+      {
+        // Swallow exceptions from the user-provided error_notifier to prevent
+        // infinite loops when both formatting and the notifier throw.
+      }
+#endif
+    }
+  }
+
   /**
    * Calls some functions that we forward declare on the backend and tries to ensure the linker
    * includes the necessary symbols
@@ -288,6 +472,13 @@ private:
    */
   QUILL_ATTRIBUTE_HOT void _poll()
   {
+    // poll hook
+    bool poll_end_called = false;
+    if (QUILL_UNLIKELY(static_cast<bool>(_options.backend_worker_on_poll_begin)))
+    {
+      _invoke_poll_hook(_options.backend_worker_on_poll_begin);
+    }
+
     // load all contexts locally
     _update_active_thread_contexts_cache();
 
@@ -310,7 +501,7 @@ private:
         {
           // We need to be cautious because there are log messages in the lock-free queues
           // that have not yet been cached in the transit event buffer. Logging only the cached
-          // messages can result in out-of-order log entries, as messages with larger timestamps
+          // messages can result in out-of-order log entries, as messages with lower timestamps
           // in the queue might be missed.
         }
       }
@@ -320,9 +511,9 @@ private:
       // No cached transit events to process, minimal thread workload.
 
       // force flush all remaining messages
-      _flush_and_run_active_sinks(true, _options.sink_min_flush_interval);
+      _flush_and_run_active_sinks(true, _options.sink_min_flush_interval, SinkFlushReason::Periodic);
 
-      // check for any dropped messages / blocked threads
+      // check for any dropped events / blocked threads
       _check_failure_counter(_options.error_notifier);
 
       // This is useful when BackendTscClock is used to keep it up to date
@@ -335,6 +526,12 @@ private:
         _cleanup_invalidated_thread_contexts();
         _cleanup_invalidated_loggers();
         _try_shrink_empty_transit_event_buffers();
+
+        // poll hook
+        if (QUILL_UNLIKELY(static_cast<bool>(_options.backend_worker_on_poll_end)))
+        {
+          _invoke_poll_end_once(poll_end_called);
+        }
 
         // There is nothing left to do, and we can let this thread sleep for a while
         // buffer events are 0 here and also all the producer queues are empty
@@ -353,9 +550,15 @@ private:
         }
         else if (_options.enable_yield_when_idle)
         {
-          std::this_thread::yield();
+          detail::yield_thread();
         }
       }
+    }
+
+    // poll hook
+    if (QUILL_UNLIKELY(static_cast<bool>(_options.backend_worker_on_poll_end)))
+    {
+      _invoke_poll_end_once(poll_end_called);
     }
   }
 
@@ -365,16 +568,17 @@ private:
   QUILL_ATTRIBUTE_COLD void _init(BackendOptions const& options)
   {
     _options = options;
+    _is_rdtsc_clock_config_valid.store(_options.sleep_duration <= _options.rdtsc_resync_interval,
+                                       std::memory_order_relaxed);
 
-    // Cache this thread's id
-    _worker_thread_id.store(get_thread_id());
+    // ManualBackendWorker::init() calls _init() directly, so validate here as well.
+    validate_options(_options);
 
     (void)get_thread_name();
 
-    // Double check or modify some backend options before we start
+    // Zero limits make no sense as we can't process anything; normalize them to 1
     if (_options.transit_events_hard_limit == 0)
     {
-      // transit_events_hard_limit of 0 makes no sense as we can't process anything
       _options.transit_events_hard_limit = 1;
     }
 
@@ -383,23 +587,24 @@ private:
       _options.transit_events_soft_limit = 1;
     }
 
-    if (_options.transit_events_soft_limit > _options.transit_events_hard_limit)
-    {
-      QUILL_THROW(QuillError{fmtquill::format(
-        "transit_events_soft_limit ({}) cannot be greater than transit_events_hard_limit "
-        "({}). Please ensure that the soft limit is less than or equal to the hard limit.",
-        _options.transit_events_soft_limit, _options.transit_events_hard_limit)});
-    }
-    else if (!is_power_of_two(_options.transit_events_hard_limit))
-    {
-      QUILL_THROW(QuillError{fmtquill::format(
-        "transit_events_hard_limit ({}) must be a power of two", _options.transit_events_hard_limit)});
-    }
-    else if (!is_power_of_two(_options.transit_events_soft_limit))
-    {
-      QUILL_THROW(QuillError{fmtquill::format(
-        "transit_events_soft_limit ({}) must be a power of two", _options.transit_events_soft_limit)});
-    }
+    _last_output_timestamp = 0;
+
+    // Backend::stop() releases the worker's cache, but thread-local contexts can
+    // outlive the backend thread and be reused after a later Backend::start().
+    // Refresh unconditionally so existing frontend queues are visible again.
+    _update_active_thread_contexts_cache(true);
+
+    // Cache this thread's id only after initialization has succeeded. ManualBackendWorker::init()
+    // calls this function on the caller thread and can propagate validation errors.
+    uint32_t const worker_thread_id = get_thread_id();
+    _worker_thread_id.store(worker_thread_id);
+    LoggerBase::set_current_thread_is_backend_thread(true);
+  }
+
+  /***/
+  void _clear_backend_thread_flag() noexcept
+  {
+    LoggerBase::set_current_thread_is_backend_thread(false);
   }
 
   /**
@@ -416,7 +621,7 @@ private:
       {
         // we are done, all queues are now empty
         _check_failure_counter(_options.error_notifier);
-        _flush_and_run_active_sinks(false, std::chrono::milliseconds{0});
+        _flush_and_run_active_sinks(false, std::chrono::milliseconds{0}, SinkFlushReason::Final);
         break;
       }
 
@@ -428,14 +633,22 @@ private:
         {
           // We need to be cautious because there are log messages in the lock-free queues
           // that have not yet been cached in the transit event buffer. Logging only the cached
-          // messages can result in out-of-order log entries, as messages with larger timestamps
+          // messages can result in out-of-order log entries, as messages with lower timestamps
           // in the queue might be missed.
         }
       }
     }
 
+    // Publish that no active clock is available so calls made after stop use their documented
+    // fallback. The clock remains owned by _rdtsc_clock_owner: a concurrent reader may already
+    // have loaded its address and must be allowed to finish. A subsequent start reconfigures,
+    // resynchronizes, and republishes the same stable allocation.
+    _rdtsc_clock.store(nullptr, std::memory_order_release);
+
     _cleanup_invalidated_thread_contexts();
     _cleanup_invalidated_loggers();
+
+    _clear_backend_thread_flag();
   }
 
   /**
@@ -444,11 +657,12 @@ private:
   QUILL_ATTRIBUTE_HOT size_t _populate_transit_events_from_frontend_queues()
   {
     uint64_t const ts_now = _options.log_timestamp_ordering_grace_period.count()
-      ? static_cast<uint64_t>((detail::get_timestamp<std::chrono::system_clock>() - _options.log_timestamp_ordering_grace_period)
-                                .count())
-      : std::numeric_limits<uint64_t>::max();
+      ? (detail::get_system_time_ns() -
+         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(_options.log_timestamp_ordering_grace_period)
+                                 .count()))
+      : (std::numeric_limits<uint64_t>::max)();
 
-    size_t cached_transit_events_count{0};
+    size_t total_cached_transit_events_count{0};
 
     for (ThreadContext* thread_context : _active_thread_contexts_cache)
     {
@@ -457,17 +671,17 @@ private:
 
       if (thread_context->has_unbounded_queue_type())
       {
-        cached_transit_events_count += _read_and_decode_frontend_queue(
+        total_cached_transit_events_count += _read_and_decode_frontend_queue(
           thread_context->get_spsc_queue_union().unbounded_spsc_queue, thread_context, ts_now);
       }
       else if (thread_context->has_bounded_queue_type())
       {
-        cached_transit_events_count += _read_and_decode_frontend_queue(
+        total_cached_transit_events_count += _read_and_decode_frontend_queue(
           thread_context->get_spsc_queue_union().bounded_spsc_queue, thread_context, ts_now);
       }
     }
 
-    return cached_transit_events_count;
+    return total_cached_transit_events_count;
   }
 
   /**
@@ -486,7 +700,11 @@ private:
     size_t const queue_capacity = frontend_queue.capacity();
     size_t total_bytes_read{0};
 
-    do
+    // Reads a maximum of one full frontend queue or up to the transit events' hard limit to
+    // prevent getting stuck on the same producer. The buffer size is checked before each read so
+    // that a buffer already at the hard limit does not accept another event and expand past it
+    while ((total_bytes_read < queue_capacity) &&
+           (thread_context->_transit_event_buffer->size() < _options.transit_events_hard_limit))
     {
       std::byte* read_pos;
 
@@ -521,10 +739,7 @@ private:
       auto const bytes_read = static_cast<size_t>(read_pos - read_begin);
       frontend_queue.finish_read(bytes_read);
       total_bytes_read += bytes_read;
-      // Reads a maximum of one full frontend queue or the transit events' hard limit to prevent
-      // getting stuck on the same producer.
-    } while ((total_bytes_read < queue_capacity) &&
-             (thread_context->_transit_event_buffer->size() < _options.transit_events_hard_limit));
+    }
 
     if (total_bytes_read != 0)
     {
@@ -547,7 +762,24 @@ private:
                  "BackendWorker::_populate_transit_event_from_frontend_queue()");
 
     // Allocate a new TransitEvent or use an existing one to store the message from the queue
-    TransitEvent* transit_event = thread_context->_transit_event_buffer->back();
+    TransitEvent* transit_event{nullptr};
+
+    QUILL_TRY { transit_event = thread_context->_transit_event_buffer->back(); }
+#if !defined(QUILL_NO_EXCEPTIONS)
+    QUILL_CATCH_ALL()
+    {
+      // Growing the transit event buffer failed (allocation failure). Nothing has been consumed
+      // from the queue yet, so leave the message where it is and stop reading this queue. The
+      // poll loop keeps processing already-cached events, which frees buffer slots so a later
+      // attempt succeeds at the current capacity without allocating.
+      // Pass a literal here: formatting a message could allocate and throw again, and an
+      // exception escaping this handler would skip event processing and prevent recovery.
+      _notify_error(_options.error_notifier,
+                    "Quill ERROR: Failed to expand the transit event buffer (allocation failure). "
+                    "The log message remains in the thread queue and will be retried");
+      return false;
+    }
+#endif
 
     QUILL_ASSERT(
       transit_event,
@@ -557,14 +789,19 @@ private:
       transit_event->formatted_msg,
       "formatted_msg is nullptr in BackendWorker::_populate_transit_event_from_frontend_queue()");
 
-    std::memcpy(&transit_event->timestamp, read_pos, sizeof(transit_event->timestamp));
-    read_pos += sizeof(transit_event->timestamp);
+    static_assert(sizeof(FormatArgsDecoder) == sizeof(uintptr_t),
+                  "FormatArgsDecoder must fit in uintptr_t for packed header decoding");
+    static_assert(sizeof(uintptr_t) <= sizeof(uint64_t),
+                  "Packed header decoding requires pointers to fit in 64 bits");
 
-    std::memcpy(&transit_event->macro_metadata, read_pos, sizeof(transit_event->macro_metadata));
-    read_pos += sizeof(transit_event->macro_metadata);
+    uint64_t header_words[4];
+    std::memcpy(header_words, read_pos, sizeof(header_words));
+    read_pos += sizeof(header_words);
 
-    std::memcpy(&transit_event->logger_base, read_pos, sizeof(transit_event->logger_base));
-    read_pos += sizeof(transit_event->logger_base);
+    transit_event->timestamp = header_words[0];
+    transit_event->macro_metadata =
+      reinterpret_cast<MacroMetadata const*>(static_cast<uintptr_t>(header_words[1]));
+    transit_event->logger_base = reinterpret_cast<LoggerBase*>(static_cast<uintptr_t>(header_words[2]));
 
     QUILL_ASSERT(transit_event->logger_base,
                  "transit_event->logger_base is nullptr after memcpy from queue");
@@ -584,7 +821,18 @@ private:
       {
         // Lazy initialization of rdtsc clock on the backend thread only if the user decides to use
         // it. The clock requires a few seconds to init as it is taking samples first.
-        _rdtsc_clock.store(new RdtscClock{_options.rdtsc_resync_interval}, std::memory_order_release);
+        if (!_rdtsc_clock_owner)
+        {
+          _rdtsc_clock_owner = std::make_unique<RdtscClock>(_options.rdtsc_resync_interval);
+        }
+        else
+        {
+          _rdtsc_clock_owner->reconfigure(_options.rdtsc_resync_interval);
+        }
+
+        // Publish only after construction or reconfiguration has completed. The allocation remains
+        // stable across every backend stop/start cycle.
+        _rdtsc_clock.store(_rdtsc_clock_owner.get(), std::memory_order_release);
         _last_rdtsc_resync_time = std::chrono::steady_clock::now();
       }
 
@@ -595,7 +843,7 @@ private:
 
     // Check if strict log timestamp order is enabled and the clock source is not User
     if ((transit_event->logger_base->_clock_source != ClockSourceType::User) &&
-        (ts_now != std::numeric_limits<uint64_t>::max()))
+        (ts_now != (std::numeric_limits<uint64_t>::max)()))
     {
       // We only check against `ts_now` for real timestamps, not custom timestamps by the user, and
       // when the grace period is enabled
@@ -622,98 +870,137 @@ private:
       // Ensure the message timestamp is not greater than ts_now.
       if (QUILL_UNLIKELY(transit_event->timestamp > ts_now))
       {
-        // If the message timestamp is ahead of the current time, temporarily halt processing.
-        // This guarantees the integrity of message order and avoids missed messages.
-        // We halt processing here to avoid introducing out-of-sequence messages.
-        // This scenario prevents potential race conditions where timestamps from
-        // the last queue could overwrite those from the first queue before they are included.
+        // If the message timestamp is ahead of the grace-period cutoff, temporarily halt
+        // processing this queue. This keeps newer events in the queue until other frontend
+        // threads have had the configured grace window to publish older timestamped events.
         // We return at this point without adding the current event to the buffer.
         return false;
       }
     }
 
-    FormatArgsDecoder format_args_decoder;
-    std::memcpy(&format_args_decoder, read_pos, sizeof(format_args_decoder));
-    read_pos += sizeof(format_args_decoder);
+    bool const is_mdc_event = (transit_event->macro_metadata->event() == MacroMetadata::Event::MdcSet) ||
+      (transit_event->macro_metadata->event() == MacroMetadata::Event::MdcErase) ||
+      (transit_event->macro_metadata->event() == MacroMetadata::Event::MdcClear);
 
-    if ((transit_event->macro_metadata->event() == MacroMetadata::Event::LogWithRuntimeMetadataDeepCopy) ||
-        (transit_event->macro_metadata->event() == MacroMetadata::Event::LogWithRuntimeMetadataShallowCopy) ||
-        (transit_event->macro_metadata->event() == MacroMetadata::Event::LogWithRuntimeMetadataHybridCopy))
+    if (transit_event->macro_metadata->event() != MacroMetadata::Event::Metric)
     {
-      _apply_runtime_metadata(read_pos, transit_event);
-    }
+      uintptr_t const decoder_bits = static_cast<uintptr_t>(header_words[3]);
+      FormatArgsDecoder format_args_decoder;
+      std::memcpy(&format_args_decoder, &decoder_bits, sizeof(format_args_decoder));
 
-    // we need to check and do not try to format the flush events as that wouldn't be valid
-    if ((transit_event->macro_metadata->event() != MacroMetadata::Event::Flush) &&
-        (transit_event->macro_metadata->event() != MacroMetadata::Event::LoggerRemovalRequest))
-    {
-      format_args_decoder(read_pos, _format_args_store);
-
-      if (!transit_event->macro_metadata->has_named_args())
+      if (is_mdc_event)
       {
-        _populate_formatted_log_message(transit_event, transit_event->macro_metadata->message_format());
+        _apply_mdc_event(*thread_context, transit_event->macro_metadata->event(), format_args_decoder, read_pos);
       }
       else
       {
-        // using the message_format as key for lookups
-        _named_args_format_template.assign(transit_event->macro_metadata->message_format());
+        bool const runtime_metadata_event =
+          (transit_event->macro_metadata->event() == MacroMetadata::Event::LogWithRuntimeMetadataDeepCopy) ||
+          (transit_event->macro_metadata->event() == MacroMetadata::Event::LogWithRuntimeMetadataShallowCopy) ||
+          (transit_event->macro_metadata->event() == MacroMetadata::Event::LogWithRuntimeMetadataHybridCopy);
 
-        if (auto const search = _named_args_templates.find(_named_args_format_template);
-            search != std::cend(_named_args_templates))
+        if (runtime_metadata_event)
         {
-          // process named args message when we already have parsed the format message once,
-          // and we have the names of each arg cached
-          auto const& [message_format, arg_names] = search->second;
+          _apply_runtime_metadata(read_pos, transit_event);
+        }
 
-          _populate_formatted_log_message(transit_event, message_format.data());
-          _populate_formatted_named_args(transit_event, arg_names);
+        // we need to check and do not try to format the flush events as that wouldn't be valid
+        if ((transit_event->macro_metadata->event() != MacroMetadata::Event::Flush) &&
+            (transit_event->macro_metadata->event() != MacroMetadata::Event::LoggerRemovalRequest))
+        {
+          format_args_decoder(read_pos, _format_args_store);
+
+          if (!transit_event->macro_metadata->has_named_args())
+          {
+            _populate_formatted_log_message(transit_event, transit_event->macro_metadata->message_format());
+          }
+          else if (runtime_metadata_event)
+          {
+            // Runtime metadata format strings are user generated and can be unique per call;
+            // caching them would grow _named_args_templates without bound for the lifetime of
+            // the backend, so process them without caching
+            auto const [message_format, arg_names] =
+              _process_named_args_format_message(transit_event->macro_metadata->message_format());
+
+            _populate_formatted_log_message(transit_event, message_format.data());
+            _populate_formatted_named_args(transit_event, arg_names);
+          }
+          else
+          {
+            // using the message_format as key for lookups
+            _named_args_format_template.assign(transit_event->macro_metadata->message_format());
+
+            if (auto const search = _named_args_templates.find(_named_args_format_template);
+                search != std::cend(_named_args_templates))
+            {
+              // process named args message when we already have parsed the format message once,
+              // and we have the names of each arg cached
+              auto const& [message_format, arg_names] = search->second;
+
+              _populate_formatted_log_message(transit_event, message_format.data());
+              _populate_formatted_named_args(transit_event, arg_names);
+            }
+            else
+            {
+              // process named args log when the message format is processed for the first time
+              // parse name of each arg and stored them to our lookup map
+              auto const [res_it, inserted] = _named_args_templates.try_emplace(
+                _named_args_format_template,
+                _process_named_args_format_message(transit_event->macro_metadata->message_format()));
+
+              auto const& [message_format, arg_names] = res_it->second;
+
+              // suppress unused warnings
+              (void)inserted;
+
+              _populate_formatted_log_message(transit_event, message_format.data());
+              _populate_formatted_named_args(transit_event, arg_names);
+            }
+          }
+
+          _set_transit_event_mdc(*thread_context, transit_event);
+        }
+        else if (transit_event->macro_metadata->event() == MacroMetadata::Event::Flush)
+        {
+          // if this is a flush event then we do not need to format anything for the
+          // transit_event, but we need to set the transit event's flush_flag pointer instead
+          uintptr_t flush_flag_tmp;
+          std::memcpy(&flush_flag_tmp, read_pos, sizeof(uintptr_t));
+          transit_event->set_flush_flag(reinterpret_cast<std::atomic<bool>*>(flush_flag_tmp));
+          read_pos += sizeof(uintptr_t);
+        }
+        else if (transit_event->macro_metadata->event() == MacroMetadata::Event::LoggerRemovalRequest)
+        {
+          // Store the logger name and the sync flag
+          uintptr_t logger_removal_flag_tmp;
+          std::memcpy(&logger_removal_flag_tmp, read_pos, sizeof(uintptr_t));
+          read_pos += sizeof(uintptr_t);
+          std::string_view const logger_name = Codec<std::string>::decode_arg(read_pos);
+
+          _logger_removal_flags.emplace(
+            std::string{logger_name}, reinterpret_cast<std::atomic<bool>*>(logger_removal_flag_tmp));
         }
         else
         {
-          // process named args log when the message format is processed for the first time
-          // parse name of each arg and stored them to our lookup map
-          auto const [res_it, inserted] = _named_args_templates.try_emplace(
-            _named_args_format_template,
-            _process_named_args_format_message(transit_event->macro_metadata->message_format()));
-
-          auto const& [message_format, arg_names] = res_it->second;
-
-          // suppress unused warnings
-          (void)inserted;
-
-          _populate_formatted_log_message(transit_event, message_format.data());
-          _populate_formatted_named_args(transit_event, arg_names);
+          QUILL_ASSERT(
+            false,
+            "Unhandled event type in BackendWorker::_populate_transit_event_from_frontend_queue()");
         }
       }
     }
-    else if (transit_event->macro_metadata->event() == MacroMetadata::Event::Flush)
-    {
-      // if this is a flush event then we do not need to format anything for the
-      // transit_event, but we need to set the transit event's flush_flag pointer instead
-      uintptr_t flush_flag_tmp;
-      std::memcpy(&flush_flag_tmp, read_pos, sizeof(uintptr_t));
-      transit_event->flush_flag = reinterpret_cast<std::atomic<bool>*>(flush_flag_tmp);
-      read_pos += sizeof(uintptr_t);
-    }
     else
     {
-      // Store the logger name and the sync flag
-      QUILL_ASSERT(
-        transit_event->macro_metadata->event() == MacroMetadata::Event::LoggerRemovalRequest,
-        "Unexpected event type in BackendWorker::_populate_transit_event_from_frontend_queue(), "
-        "expected LoggerRemovalRequest");
-
-      uintptr_t logger_removal_flag_tmp;
-      std::memcpy(&logger_removal_flag_tmp, read_pos, sizeof(uintptr_t));
-      read_pos += sizeof(uintptr_t);
-      std::string_view const logger_name = Codec<std::string>::decode_arg(read_pos);
-
-      _logger_removal_flags.emplace(std::string{logger_name},
-                                    reinterpret_cast<std::atomic<bool>*>(logger_removal_flag_tmp));
+      double metric_value;
+      std::memcpy(&metric_value, &header_words[3], sizeof(metric_value));
+      transit_event->set_metric_value(metric_value);
     }
 
-    // commit this transit event
-    thread_context->_transit_event_buffer->push_back();
+    if (!is_mdc_event)
+    {
+      // commit this transit event
+      thread_context->_transit_event_buffer->push_back();
+    }
+
     _format_args_store.clear();
 
     return true;
@@ -760,7 +1047,7 @@ private:
   QUILL_ATTRIBUTE_HOT bool _process_lowest_timestamp_transit_event()
   {
     // Get the lowest timestamp
-    uint64_t min_ts{std::numeric_limits<uint64_t>::max()};
+    uint64_t min_ts{(std::numeric_limits<uint64_t>::max)()};
     ThreadContext* thread_context{nullptr};
 
     for (ThreadContext* tc : _active_thread_contexts_cache)
@@ -794,19 +1081,24 @@ private:
 
     QUILL_TRY { _process_transit_event(*thread_context, *transit_event, flush_flag); }
 #if !defined(QUILL_NO_EXCEPTIONS)
-    QUILL_CATCH(std::exception const& e) { _options.error_notifier(e.what()); }
+    QUILL_CATCH(std::exception const& e) { _notify_error(_options.error_notifier, e.what()); }
     QUILL_CATCH_ALL()
     {
-      _options.error_notifier(std::string{"Caught unhandled exception."});
-    } // clang-format on
+      _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
+    }
 #endif
 
     // Finally, clean up any remaining fields in the transit event
     if (transit_event->extra_data)
     {
       transit_event->extra_data->named_args.clear();
+      transit_event->extra_data->mdc.clear();
       transit_event->extra_data->runtime_metadata.has_runtime_metadata = false;
     }
+
+    // Note: event_payload is reset only in the Flush and Metric branches of _process_transit_event
+    // where it is actually populated, rather than unconditionally here. This keeps the common
+    // Log path free of an extra variant assignment.
 
     thread_context->_transit_event_buffer->pop_front();
 
@@ -843,6 +1135,7 @@ private:
     {
       if (transit_event.log_level() != LogLevel::Backtrace)
       {
+        _ensure_monotonic_output_timestamp(transit_event);
         _dispatch_transit_event_to_sinks(transit_event, thread_context.thread_id(),
                                          thread_context.thread_name());
 
@@ -907,24 +1200,61 @@ private:
     }
     else if (transit_event.macro_metadata->event() == MacroMetadata::Event::Flush)
     {
-      _flush_and_run_active_sinks(false, std::chrono::milliseconds{0});
+      _flush_and_run_active_sinks(false, std::chrono::milliseconds{0}, SinkFlushReason::Explicit);
 
       // This is a flush event, so we capture the flush flag to notify the caller after processing.
-      flush_flag = transit_event.flush_flag;
+      flush_flag = transit_event.flush_flag();
 
       // Reset the flush flag as TransitEvents are re-used, preventing incorrect flag reuse.
-      transit_event.flush_flag = nullptr;
+      transit_event.reset_payload();
 
       // We defer notifying the caller until after this function completes.
     }
+    else if (transit_event.macro_metadata->event() == MacroMetadata::Event::Metric)
+    {
+      _ensure_monotonic_output_timestamp(transit_event);
+      _write_metric_sample(transit_event, thread_context.thread_id(), thread_context.thread_name());
+
+      // Reset the payload as TransitEvents are re-used, so a later reuse of this slot starts
+      // from a clean variant state instead of still carrying the metric value.
+      transit_event.reset_payload();
+    }
+    else
+    {
+      QUILL_ASSERT(transit_event.macro_metadata->event() == MacroMetadata::Event::LoggerRemovalRequest,
+                   "Unexpected transit event type in BackendWorker::_process_transit_event()");
+      // LoggerRemovalRequest is handled when the removal flag map is populated. It has no sink
+      // dispatch work of its own.
+    }
+  }
+
+  /**
+   * Adjusts regular output event timestamps so sink-visible timestamps do not move backwards when
+   * the feature is enabled. This runs only after an event has been selected for processing, so the
+   * transit event buffers are still ordered by original timestamp.
+   */
+  QUILL_ATTRIBUTE_HOT void _ensure_monotonic_output_timestamp(TransitEvent& transit_event) noexcept
+  {
+    if (!_options.ensure_monotonic_output_timestamps)
+    {
+      return;
+    }
+
+    if (QUILL_UNLIKELY(transit_event.timestamp < _last_output_timestamp))
+    {
+      transit_event.timestamp = (_last_output_timestamp == (std::numeric_limits<uint64_t>::max)())
+        ? _last_output_timestamp
+        : _last_output_timestamp + 1;
+    }
+
+    _last_output_timestamp = transit_event.timestamp;
   }
 
   /**
    * Dispatches a transit event
    */
   QUILL_ATTRIBUTE_HOT void _dispatch_transit_event_to_sinks(TransitEvent const& transit_event,
-                                                            std::string_view const& thread_id,
-                                                            std::string_view const& thread_name)
+                                                            std::string_view thread_id, std::string_view thread_name)
   {
     // First check to see if we should init the pattern formatter on a new Logger
     // Look up to see if we have the formatter and if not create it
@@ -972,6 +1302,40 @@ private:
   }
 
   /**
+   * Forwards a decoded metric sample to each sink associated with the logger.
+   */
+  QUILL_ATTRIBUTE_HOT void _write_metric_sample(TransitEvent const& transit_event, std::string_view thread_id,
+                                                std::string_view thread_name) const
+  {
+    QUILL_ASSERT(
+      transit_event.macro_metadata,
+      "transit_event.macro_metadata is nullptr in BackendWorker::_write_metric_sample()");
+    QUILL_ASSERT(transit_event.macro_metadata->event() == MacroMetadata::Event::Metric,
+                 "Unexpected transit event type in BackendWorker::_write_metric_sample()");
+
+    // MacroMetadata is the first non-virtual base of MetricMetadata so static_cast is well-defined
+    // here. The Event::Metric check above guarantees the dynamic type.
+    auto const* metric_metadata = static_cast<MetricMetadata const*>(transit_event.macro_metadata);
+    double const metric_value = transit_event.metric_value();
+
+    for (auto& sink : transit_event.logger_base->_sinks)
+    {
+      QUILL_TRY
+      {
+        sink->write_metric(metric_metadata, transit_event.timestamp, thread_id, thread_name,
+                           _process_id, transit_event.logger_base->_logger_name, metric_value);
+      }
+#if !defined(QUILL_NO_EXCEPTIONS)
+      QUILL_CATCH(std::exception const& e) { _notify_error(_options.error_notifier, e.what()); }
+      QUILL_CATCH_ALL()
+      {
+        _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
+      }
+#endif
+    }
+  }
+
+  /**
    * Formats and writes the log statement to each sink
    */
   QUILL_ATTRIBUTE_HOT void _write_log_statement(TransitEvent const& transit_event,
@@ -986,86 +1350,119 @@ private:
     // Process each sink with the appropriate formatting and filtering
     for (auto& sink : transit_event.logger_base->_sinks)
     {
-      std::string_view log_to_write;
-
-      // Determine which formatted log to use
-      if (!sink->_override_pattern_formatter_options)
+      QUILL_TRY
       {
-        if (default_log_statement.empty())
+        std::string_view log_to_write;
+
+        // Determine which formatted log to use
+        if (!sink->_override_pattern_formatter_options)
         {
-          // Use the default formatted log statement, here by checking empty() we try to format once
-          // even for multiple sinks
-          default_log_statement = transit_event.logger_base->_pattern_formatter->format(
-            transit_event.timestamp, thread_id, thread_name, _process_id,
-            transit_event.logger_base->_logger_name, log_level_description, log_level_short_code,
-            *transit_event.macro_metadata, transit_event.get_named_args(), log_message);
+          if (default_log_statement.empty())
+          {
+            // Use the default formatted log statement, here by checking empty() we try to format
+            // once even for multiple sinks
+            default_log_statement = transit_event.logger_base->_pattern_formatter->format(
+              transit_event.timestamp, thread_id, thread_name, _process_id,
+              transit_event.logger_base->_logger_name, log_level_description, log_level_short_code,
+              *transit_event.macro_metadata, transit_event.get_named_args(), log_message,
+              transit_event.mdc());
+          }
+
+          log_to_write = default_log_statement;
+        }
+        else
+        {
+          // Sink has override_pattern_formatter_options, we do not include PatternFormatter
+          // in the frontend fo this reason we init PatternFormatter here
+          if (!sink->_override_pattern_formatter)
+          {
+            // Initialize override formatter if needed
+            sink->_override_pattern_formatter =
+              std::make_shared<PatternFormatter>(*sink->_override_pattern_formatter_options);
+          }
+
+          // Use the sink's override formatter
+          log_to_write = sink->_override_pattern_formatter->format(
+            transit_event.timestamp, thread_id, thread_name, _process_id, transit_event.logger_base->_logger_name,
+            log_level_description, log_level_short_code, *transit_event.macro_metadata,
+            transit_event.get_named_args(), log_message, transit_event.mdc());
         }
 
-        log_to_write = default_log_statement;
-      }
-      else
-      {
-        // Sink has override_pattern_formatter_options, we do not include PatternFormatter
-        // in the frontend fo this reason we init PatternFormatter here
-        if (!sink->_override_pattern_formatter)
+        // Apply filters now that we have the formatted log
+        if (sink->apply_all_filters(transit_event.macro_metadata, transit_event.timestamp,
+                                    thread_id, thread_name, transit_event.logger_base->_logger_name,
+                                    transit_event.log_level(), log_message, log_to_write))
         {
-          // Initialize override formatter if needed
-          sink->_override_pattern_formatter =
-            std::make_shared<PatternFormatter>(*sink->_override_pattern_formatter_options);
+          // Forward the message using the computed log statement that passed the filter
+          sink->write_log(transit_event.macro_metadata, transit_event.timestamp, thread_id,
+                          thread_name, _process_id, transit_event.logger_base->_logger_name,
+                          transit_event.log_level(), log_level_description, log_level_short_code,
+                          transit_event.get_named_args(), log_message, log_to_write);
         }
-
-        // Use the sink's override formatter
-        log_to_write = sink->_override_pattern_formatter->format(
-          transit_event.timestamp, thread_id, thread_name, _process_id,
-          transit_event.logger_base->_logger_name, log_level_description, log_level_short_code,
-          *transit_event.macro_metadata, transit_event.get_named_args(), log_message);
       }
-
-      // Apply filters now that we have the formatted log
-      if (sink->apply_all_filters(transit_event.macro_metadata, transit_event.timestamp, thread_id,
-                                  thread_name, transit_event.logger_base->_logger_name,
-                                  transit_event.log_level(), log_message, log_to_write))
+#if !defined(QUILL_NO_EXCEPTIONS)
+      QUILL_CATCH(std::exception const& e) { _notify_error(_options.error_notifier, e.what()); }
+      QUILL_CATCH_ALL()
       {
-        // Forward the message using the computed log statement that passed the filter
-        sink->write_log(transit_event.macro_metadata, transit_event.timestamp, thread_id,
-                        thread_name, _process_id, transit_event.logger_base->_logger_name,
-                        transit_event.log_level(), log_level_description, log_level_short_code,
-                        transit_event.get_named_args(), log_message, log_to_write);
+        _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
       }
+#endif
     }
   }
 
   /**
-   * Check for dropped messages - only when bounded queue is used
+   * Check for dropped or blocked events
    * @param error_notifier error notifier
    */
-  QUILL_ATTRIBUTE_HOT void _check_failure_counter(std::function<void(std::string const&)> const& error_notifier) noexcept
+  QUILL_ATTRIBUTE_HOT void _check_failure_counter(std::function<void(std::string const&)> const& error_notifier)
   {
-    // UnboundedNoMaxLimit does not block or drop messages
+    if (!error_notifier)
+    {
+      return;
+    }
+
     for (ThreadContext* thread_context : _active_thread_contexts_cache)
     {
-      if (thread_context->has_bounded_queue_type())
+      size_t const failed_events_cnt = thread_context->get_and_reset_failure_counter();
+
+      if (QUILL_UNLIKELY(failed_events_cnt > 0))
       {
-        size_t const failed_messages_cnt = thread_context->get_and_reset_failure_counter();
+        std::string const timestamp = _get_local_time_str();
 
-        if (QUILL_UNLIKELY(failed_messages_cnt > 0))
+        if (thread_context->has_dropping_queue())
         {
-          char timestamp[24];
-          time_t now = time(nullptr);
-          tm local_time;
-          localtime_rs(&now, &local_time);
-          strftime(timestamp, sizeof(timestamp), "%X", &local_time);
-
-          if (thread_context->has_dropping_queue())
+          if (thread_context->has_unbounded_queue_type())
           {
-            error_notifier(fmtquill::format("{} Quill INFO: Dropped {} log messages from thread {}",
-                                            timestamp, failed_messages_cnt, thread_context->thread_id()));
+            _notify_error(error_notifier,
+                          fmtquill::format("{} Quill INFO: Reached the maximum configured "
+                                           "unbounded queue capacity and dropped "
+                                           "{} events from thread {}",
+                                           timestamp, failed_events_cnt, thread_context->thread_id()));
           }
-          else if (thread_context->has_blocking_queue())
+          else
           {
-            error_notifier(
+            _notify_error(error_notifier,
+                          fmtquill::format("{} Quill INFO: Dropped {} events from thread {}",
+                                           timestamp, failed_events_cnt, thread_context->thread_id()));
+          }
+        }
+        else if (thread_context->has_blocking_queue())
+        {
+          if (thread_context->has_unbounded_queue_type())
+          {
+            _notify_error(
+              error_notifier,
+              fmtquill::format(
+                "{} Quill INFO: Reached the maximum configured unbounded queue capacity and "
+                "experienced {} blocking occurrences on thread {}",
+                timestamp, failed_events_cnt, thread_context->thread_id()));
+          }
+          else
+          {
+            _notify_error(
+              error_notifier,
               fmtquill::format("{} Quill INFO: Experienced {} blocking occurrences on thread {}",
-                               timestamp, failed_messages_cnt, thread_context->thread_id()));
+                               timestamp, failed_events_cnt, thread_context->thread_id()));
           }
         }
       }
@@ -1078,81 +1475,167 @@ private:
    * @return first: fmt string without the named arguments, second: a vector extracted keys
    */
   QUILL_ATTRIBUTE_HOT static std::pair<std::string, std::vector<std::pair<std::string, std::string>>> _process_named_args_format_message(
-    std::string_view fmt_template) noexcept
+    std::string_view fmt_template)
   {
     // It would be nice to do this at compile time and store it in macro metadata, but without
     // constexpr vector and string in c++17 it is not possible
     std::string fmt_str;
     std::vector<std::pair<std::string, std::string>> keys;
+    fmt_str.reserve(fmt_template.size());
 
-    size_t cur_pos = 0;
-
-    size_t open_bracket_pos = fmt_template.find_first_of('{');
-    while (open_bracket_pos != std::string::npos)
+    size_t pos = 0;
+    while (pos < fmt_template.size())
     {
-      // found an open bracket
-      if (size_t const open_bracket_2_pos = fmt_template.find_first_of('{', open_bracket_pos + 1);
-          open_bracket_2_pos != std::string::npos)
+      if (fmt_template[pos] != '{')
       {
-        // found another open bracket
-        if ((open_bracket_2_pos - 1) == open_bracket_pos)
-        {
-          open_bracket_pos = fmt_template.find_first_of('{', open_bracket_2_pos + 1);
-          continue;
-        }
+        fmt_str += fmt_template[pos];
+        ++pos;
+        continue;
       }
 
-      // look for the next close bracket
-      size_t close_bracket_pos = fmt_template.find_first_of('}', open_bracket_pos + 1);
-      while (close_bracket_pos != std::string::npos)
+      if ((pos + 1 < fmt_template.size()) && (fmt_template[pos + 1] == '{'))
       {
-        // found closed bracket
-        if (size_t const close_bracket_2_pos = fmt_template.find_first_of('}', close_bracket_pos + 1);
-            close_bracket_2_pos != std::string::npos)
-        {
-          // found another open bracket
-          if ((close_bracket_2_pos - 1) == close_bracket_pos)
-          {
-            close_bracket_pos = fmt_template.find_first_of('}', close_bracket_2_pos + 1);
-            continue;
-          }
-        }
+        fmt_str += "{{";
+        pos += 2;
+        continue;
+      }
 
-        // construct a fmt string excluding the characters inside the brackets { }
-        std::string_view const text_inside_placeholders =
-          fmt_template.substr(open_bracket_pos + 1, close_bracket_pos - (open_bracket_pos + 1));
-        std::string_view arg_syntax;
-        std::string_view arg_name;
+      size_t const placeholder_start = pos;
+      ++pos; // consume '{'
 
-        // look in text_inside_placeholders for special syntax formating following the named arg e.g. arg:.2f
-        if (size_t const syntax_separator = text_inside_placeholders.find(':');
-            syntax_separator != std::string_view::npos)
-        {
-          arg_syntax = text_inside_placeholders.substr(
-            syntax_separator, text_inside_placeholders.size() - syntax_separator);
-          arg_name = text_inside_placeholders.substr(0, syntax_separator);
-        }
-        else
-        {
-          arg_name = text_inside_placeholders;
-        }
-
-        fmt_str += fmtquill::format(
-          "{}{{{}}}", fmt_template.substr(cur_pos, open_bracket_pos - cur_pos), arg_syntax);
-        cur_pos = close_bracket_pos + 1;
-
-        // also add the keys to the vector
-        keys.emplace_back(arg_name, arg_syntax);
-
+      size_t const close_bracket_pos = _find_placeholder_closing_brace(fmt_template, pos);
+      if (close_bracket_pos == std::string_view::npos)
+      {
+        fmt_str += std::string{fmt_template.substr(placeholder_start)};
         break;
       }
 
-      open_bracket_pos = fmt_template.find_first_of('{', close_bracket_pos);
+      std::string_view const text_inside_placeholders = fmt_template.substr(pos, close_bracket_pos - pos);
+      std::string_view arg_syntax;
+      std::string_view arg_name;
+
+      if (size_t const syntax_separator = text_inside_placeholders.find(':');
+          syntax_separator != std::string_view::npos)
+      {
+        arg_syntax = text_inside_placeholders.substr(
+          syntax_separator, text_inside_placeholders.size() - syntax_separator);
+        arg_name = text_inside_placeholders.substr(0, syntax_separator);
+      }
+      else
+      {
+        arg_name = text_inside_placeholders;
+      }
+
+      std::string const normalized_arg_syntax = _normalize_named_arg_syntax(arg_syntax);
+
+      fmt_str += "{";
+      fmt_str += normalized_arg_syntax;
+      fmt_str += "}";
+
+      keys.emplace_back(_make_unique_named_arg_key(keys, arg_name), normalized_arg_syntax);
+      pos = close_bracket_pos + 1;
     }
 
-    // add anything remaining after the last bracket
-    fmt_str += std::string{fmt_template.substr(cur_pos, fmt_template.length() - cur_pos)};
     return std::make_pair(fmt_str, keys);
+  }
+
+  QUILL_NODISCARD static std::string _make_unique_named_arg_key(
+    std::vector<std::pair<std::string, std::string>> const& existing_keys, std::string_view arg_name)
+  {
+    std::string key{arg_name};
+
+    for (size_t suffix = 1;; ++suffix)
+    {
+      bool key_already_exists = false;
+      for (auto const& existing_key : existing_keys)
+      {
+        if (existing_key.first == key)
+        {
+          key_already_exists = true;
+          break;
+        }
+      }
+
+      if (!key_already_exists)
+      {
+        return key;
+      }
+
+      key = std::string{arg_name};
+      key += "_";
+      key += std::to_string(suffix);
+    }
+  }
+
+  QUILL_NODISCARD static size_t _find_placeholder_closing_brace(std::string_view text, size_t pos) noexcept
+  {
+    size_t nested_replacement_fields = 0;
+
+    while (pos < text.size())
+    {
+      if (text[pos] == '{')
+      {
+        if ((pos + 1 < text.size()) && (text[pos + 1] == '{'))
+        {
+          pos += 2;
+          continue;
+        }
+
+        ++nested_replacement_fields;
+        ++pos;
+        continue;
+      }
+
+      if (text[pos] == '}')
+      {
+        if (nested_replacement_fields == 0)
+        {
+          return pos;
+        }
+
+        --nested_replacement_fields;
+      }
+
+      ++pos;
+    }
+
+    return std::string_view::npos;
+  }
+
+  QUILL_NODISCARD static std::string _normalize_named_arg_syntax(std::string_view arg_syntax)
+  {
+    std::string normalized;
+    normalized.reserve(arg_syntax.size());
+
+    size_t pos = 0;
+    while (pos < arg_syntax.size())
+    {
+      if (arg_syntax[pos] != '{')
+      {
+        normalized += arg_syntax[pos];
+        ++pos;
+        continue;
+      }
+
+      if ((pos + 1 < arg_syntax.size()) && (arg_syntax[pos + 1] == '{'))
+      {
+        normalized += "{{";
+        pos += 2;
+        continue;
+      }
+
+      size_t const close_bracket_pos = _find_placeholder_closing_brace(arg_syntax, pos + 1);
+      if (close_bracket_pos == std::string_view::npos)
+      {
+        normalized += std::string{arg_syntax.substr(pos)};
+        break;
+      }
+
+      normalized += "{}";
+      pos = close_bracket_pos + 1;
+    }
+
+    return normalized;
   }
 
   /**
@@ -1178,18 +1661,13 @@ private:
       // When allocation_info has a value it means that the queue has re-allocated
       if (_options.error_notifier)
       {
-        char ts[24];
-        time_t t = time(nullptr);
-        tm p;
-        localtime_rs(std::addressof(t), std::addressof(p));
-        strftime(ts, 24, "%X", std::addressof(p));
-
         // we switched to a new here, and we also notify the user of the allocation via the
         // error_notifier
-        _options.error_notifier(
+        _notify_error(
+          _options.error_notifier,
           fmtquill::format("{} Quill INFO: Allocated a new SPSC queue with a capacity of {} KiB "
                            "(previously {} KiB) from thread {}",
-                           ts, (read_result.new_capacity / 1024),
+                           _get_local_time_str(), (read_result.new_capacity / 1024),
                            (read_result.previous_capacity / 1024), thread_context->thread_id()));
       }
     }
@@ -1249,7 +1727,9 @@ private:
   }
 
   /***/
-  QUILL_ATTRIBUTE_HOT void _flush_and_run_active_sinks(bool run_periodic_tasks, std::chrono::milliseconds sink_min_flush_interval)
+  QUILL_ATTRIBUTE_HOT void _flush_and_run_active_sinks(bool run_periodic_tasks,
+                                                       std::chrono::milliseconds sink_min_flush_interval,
+                                                       SinkFlushReason flush_reason)
   {
     // Populate the active sinks cache with unique sinks, consider only the valid loggers
     _logger_manager.for_each_logger(
@@ -1306,17 +1786,27 @@ private:
           // If an exception is thrown, catch it here to prevent it from propagating
           // to the outer function. This prevents potential infinite loops caused by failing
           // flush operations.
-          sink->flush_sink();
+          sink->flush_sink(flush_reason);
         }
       }
 #if !defined(QUILL_NO_EXCEPTIONS)
-      QUILL_CATCH(std::exception const& e) { _options.error_notifier(e.what()); }
-      QUILL_CATCH_ALL() { _options.error_notifier(std::string{"Caught unhandled exception."}); }
+      QUILL_CATCH(std::exception const& e) { _notify_error(_options.error_notifier, e.what()); }
+      QUILL_CATCH_ALL()
+      {
+        _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
+      }
 #endif
 
       if (run_periodic_tasks)
       {
-        sink->run_periodic_tasks();
+        QUILL_TRY { sink->run_periodic_tasks(); }
+#if !defined(QUILL_NO_EXCEPTIONS)
+        QUILL_CATCH(std::exception const& e) { _notify_error(_options.error_notifier, e.what()); }
+        QUILL_CATCH_ALL()
+        {
+          _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
+        }
+#endif
       }
     }
 
@@ -1332,10 +1822,10 @@ private:
   /**
    * Reloads the thread contexts in our local cache.
    */
-  QUILL_ATTRIBUTE_HOT void _update_active_thread_contexts_cache()
+  QUILL_ATTRIBUTE_HOT void _update_active_thread_contexts_cache(bool force = false)
   {
     // Check if _thread_contexts has changed. This can happen only when a new thread context is added by any Logger
-    if (QUILL_UNLIKELY(_thread_context_manager.new_thread_context_flag()))
+    if (QUILL_UNLIKELY(force || _thread_context_manager.new_thread_context_flag()))
     {
       _active_thread_contexts_cache.clear();
       _thread_context_manager.for_each_thread_context(
@@ -1433,7 +1923,8 @@ private:
         // check the queues are empty each time before removing a logger to avoid
         // potential race condition of the logger* still being in the queue
         return _check_frontend_queues_and_cached_transit_events_empty();
-      }, _removed_loggers);
+      },
+      _removed_loggers);
 
     if (!_removed_loggers.empty())
     {
@@ -1471,75 +1962,175 @@ private:
     }
   }
 
-  /**
-   * This function takes an `format_args_store` containing multiple arguments and formats them into
-   * a single string using a generated format string. Due to limitations in the ability to
-   * iterate and format each argument individually in libfmt, this approach is used.
-   * After formatting, the string is split to isolate each formatted value.
-   */
+  void _apply_mdc_event(ThreadContext& thread_context, MacroMetadata::Event event,
+                        FormatArgsDecoder format_args_decoder, std::byte*& read_pos)
+  {
+    if (event == MacroMetadata::Event::MdcSet)
+    {
+      format_args_decoder(read_pos, _format_args_store);
+
+      QUILL_ASSERT((_format_args_store.size() % 2) == 0,
+                   "MdcSet decoded argument count mismatch in BackendWorker::_apply_mdc_event()");
+
+      if (!thread_context._backend_mdc_state)
+      {
+        thread_context._backend_mdc_state = std::make_shared<BackendMdcState>(_options.mdc_format_pattern);
+      }
+
+      BackendMdcState& mdc_state = *thread_context._backend_mdc_state;
+      auto const field_count = static_cast<uint32_t>(_format_args_store.size() / 2);
+
+      _mdc_fields.clear();
+      _mdc_fields.reserve(field_count);
+
+      QUILL_TRY
+      {
+        for (uint32_t i = 0; i < field_count; ++i)
+        {
+          int const key_index = static_cast<int>(i * 2u);
+          int const value_index = key_index + 1;
+
+          std::string const key = fmtquill::vformat(
+            "{}", fmtquill::basic_format_args<fmtquill::format_context>{_format_args_store.data() + key_index, 1});
+          std::string const value = fmtquill::vformat(
+            "{}", fmtquill::basic_format_args<fmtquill::format_context>{_format_args_store.data() + value_index, 1});
+
+          _mdc_fields.emplace_back(key, value);
+        }
+      }
+#if !defined(QUILL_NO_EXCEPTIONS)
+      QUILL_CATCH(std::exception const& e)
+      {
+        _notify_error(_options.error_notifier, e.what());
+        return;
+      }
+      QUILL_CATCH_ALL()
+      {
+        _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
+        return;
+      }
+#endif
+
+      for (auto const& [key, value] : _mdc_fields)
+      {
+        mdc_state.set(key, value);
+      }
+
+      QUILL_TRY { mdc_state.rebuild_formatted_mdc(); }
+#if !defined(QUILL_NO_EXCEPTIONS)
+      QUILL_CATCH(std::exception const& e) { _notify_error(_options.error_notifier, e.what()); }
+      QUILL_CATCH_ALL()
+      {
+        _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
+      }
+#endif
+    }
+    else if (event == MacroMetadata::Event::MdcErase)
+    {
+      format_args_decoder(read_pos, _format_args_store);
+
+      QUILL_ASSERT(_format_args_store.size() >= 1,
+                   "MdcErase decoded argument count mismatch in BackendWorker::_apply_mdc_event()");
+
+      if (thread_context._backend_mdc_state)
+      {
+        _mdc_keys.clear();
+        _mdc_keys.reserve(static_cast<size_t>(_format_args_store.size()));
+
+        QUILL_TRY
+        {
+          for (int i = 0; i < _format_args_store.size(); ++i)
+          {
+            _mdc_keys.emplace_back(fmtquill::vformat(
+              "{}", fmtquill::basic_format_args<fmtquill::format_context>{_format_args_store.data() + i, 1}));
+          }
+        }
+#if !defined(QUILL_NO_EXCEPTIONS)
+        QUILL_CATCH(std::exception const& e)
+        {
+          _notify_error(_options.error_notifier, e.what());
+          return;
+        }
+        QUILL_CATCH_ALL()
+        {
+          _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
+          return;
+        }
+#endif
+
+        for (std::string const& key : _mdc_keys)
+        {
+          thread_context._backend_mdc_state->erase(key);
+        }
+
+        if (thread_context._backend_mdc_state->empty())
+        {
+          thread_context._backend_mdc_state.reset();
+        }
+        else
+        {
+          QUILL_TRY { thread_context._backend_mdc_state->rebuild_formatted_mdc(); }
+#if !defined(QUILL_NO_EXCEPTIONS)
+          QUILL_CATCH(std::exception const& e) { _notify_error(_options.error_notifier, e.what()); }
+          QUILL_CATCH_ALL()
+          {
+            _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
+          }
+#endif
+        }
+      }
+    }
+    else if (event == MacroMetadata::Event::MdcClear)
+    {
+      thread_context._backend_mdc_state.reset();
+    }
+    else
+    {
+      QUILL_ASSERT(false, "Unexpected MDC event in BackendWorker::_apply_mdc_event()");
+    }
+  }
+
+  void _set_transit_event_mdc(ThreadContext const& thread_context, TransitEvent* transit_event)
+  {
+    if (thread_context._backend_mdc_state)
+    {
+      std::string_view const mdc = thread_context._backend_mdc_state->formatted_mdc();
+      transit_event->ensure_extra_data();
+      transit_event->extra_data->mdc.assign(mdc.data(), mdc.size());
+    }
+  }
+
+  /** Formats each named-arg value individually using the corresponding argument tail. */
   static void _format_and_split_arguments(std::vector<std::pair<std::string, std::string>> const& orig_arg_names,
                                           std::vector<std::pair<std::string, std::string>>& named_args,
                                           DynamicFormatArgStore const& format_args_store,
                                           BackendOptions const& options)
   {
-    // Generate a format string
-    std::string format_string;
-    static constexpr std::string_view delimiter{QUILL_MAGIC_SEPARATOR};
-
     for (size_t i = 0; i < named_args.size(); ++i)
     {
-      // We need an additional check here because named_args can have a size greater than orig_arg_names
-      // This is because we are adding the arguments without a name with a placeholder name
+      if (i >= static_cast<size_t>(format_args_store.size()))
+      {
+        break;
+      }
+
+      std::string format_string{"{}"};
+
+      // orig_arg_names[i].second stores the normalized format syntax, for example ":.2f" or ":{}".
       if ((i < orig_arg_names.size()) && !orig_arg_names[i].second.empty())
       {
-        // orig_arg_names[i].second is special format syntax for the named argument if provided, eg name:.2f
-        format_string += fmtquill::format("{{{}}}", orig_arg_names[i].second);
-      }
-      else
-      {
-        format_string += "{}";
+        format_string = "{";
+        format_string += orig_arg_names[i].second;
+        format_string += "}";
       }
 
-      if (i < named_args.size() - 1)
+      fmtquill::vformat_to(std::back_inserter(named_args[i].second), format_string,
+                           fmtquill::basic_format_args<fmtquill::format_context>{
+                             format_args_store.data() + static_cast<std::ptrdiff_t>(i),
+                             format_args_store.size() - static_cast<int>(i)});
+
+      if (options.check_printable_char && format_args_store.has_string_related_type())
       {
-        format_string += delimiter;
-      }
-    }
-
-    // Format all values to a single string
-    std::string formatted_values_str;
-    fmtquill::vformat_to(std::back_inserter(formatted_values_str), format_string,
-                         fmtquill::basic_format_args<fmtquill::format_context>{
-                           format_args_store.data(), format_args_store.size()});
-
-    // Split the formatted_values to isolate each value
-    size_t start = 0;
-    size_t end = 0;
-    size_t idx = 0;
-
-    while ((end = formatted_values_str.find(delimiter, start)) != std::string::npos)
-    {
-      if (idx < named_args.size())
-      {
-        named_args[idx++].second = formatted_values_str.substr(start, end - start);
-      }
-      start = end + delimiter.length();
-    }
-
-    // last value
-    if (idx < named_args.size())
-    {
-      named_args[idx].second = formatted_values_str.substr(start);
-    }
-
-    // We call sanitize_non_printable_chars for each value because formatted_values_str already
-    // contains non-printable characters for the argument separation
-    if (options.check_printable_char && format_args_store.has_string_related_type())
-    {
-      // if non-printable chars check is configured, or if any of the provided arguments are strings
-      for (auto& named_arg : named_args)
-      {
-        sanitize_non_printable_chars(named_arg.second, options);
+        sanitize_non_printable_chars(named_args[i].second, options);
       }
     }
   }
@@ -1550,6 +2141,12 @@ private:
     transit_event->ensure_extra_data();
 
     auto* named_args = &transit_event->extra_data->named_args;
+    named_args->clear();
+
+    if (arg_names.empty())
+    {
+      return;
+    }
 
     named_args->resize(arg_names.size());
 
@@ -1573,6 +2170,10 @@ private:
       // This catch block simply catches the exception.
       // Since the error has already been handled in _populate_formatted_log_message,
       // there is no additional action required here.
+    }
+    QUILL_CATCH_ALL()
+    {
+      _notify_error(_options.error_notifier, std::string{"Caught unhandled exception."});
     }
 #endif
   }
@@ -1602,7 +2203,18 @@ private:
                          transit_event->macro_metadata->short_source_location(), e.what());
 
       transit_event->formatted_msg->append(error);
-      _options.error_notifier(error);
+      _notify_error(_options.error_notifier, error);
+    }
+    QUILL_CATCH_ALL()
+    {
+      transit_event->formatted_msg->clear();
+      std::string const error = fmtquill::format(
+        R"([Could not format log statement. message: "{}", location: "{}", error: "{}"])",
+        transit_event->macro_metadata->message_format(),
+        transit_event->macro_metadata->short_source_location(), "Caught unhandled exception.");
+
+      transit_event->formatted_msg->append(error);
+      _notify_error(_options.error_notifier, error);
     }
 #endif
   }
@@ -1678,16 +2290,17 @@ private:
       {
         if (options.check_printable_char(c))
         {
-          formatted_msg.append(std::string{c});
+          formatted_msg.push_back(c);
         }
         else
         {
           // convert non-printable character to hex
+          unsigned char const byte = static_cast<unsigned char>(c);
           constexpr char hex[] = "0123456789ABCDEF";
-          formatted_msg.append(std::string{'\\'});
-          formatted_msg.append(std::string{'x'});
-          formatted_msg.append(std::string{hex[(c >> 4) & 0xF]});
-          formatted_msg.append(std::string{hex[c & 0xF]});
+          formatted_msg.push_back('\\');
+          formatted_msg.push_back('x');
+          formatted_msg.push_back(hex[(byte >> 4) & 0xF]);
+          formatted_msg.push_back(hex[byte & 0xF]);
         }
       }
     }
@@ -1696,17 +2309,21 @@ private:
 private:
   friend class quill::ManualBackendWorker;
 
+  std::unique_ptr<RdtscClock> _rdtsc_clock_owner;
   std::unique_ptr<BackendWorkerLock> _backend_worker_lock;
   ThreadContextManager& _thread_context_manager = ThreadContextManager::instance();
   SinkManager& _sink_manager = SinkManager::instance();
   LoggerManager& _logger_manager = LoggerManager::instance();
   BackendOptions _options;
+  uint64_t _last_output_timestamp{0};
   std::thread _worker_thread;
 
   DynamicFormatArgStore _format_args_store; /** Format args tmp storage as member to avoid reallocation */
   std::vector<std::string> _removed_loggers; /** Even an empty vector causes an allocation on Windows */
   std::vector<ThreadContext*> _active_thread_contexts_cache;
   std::vector<Sink*> _active_sinks_cache; /** Member to avoid re-allocating **/
+  std::vector<std::pair<std::string, std::string>> _mdc_fields; /** MDC set scratch storage */
+  std::vector<std::string> _mdc_keys;                           /** MDC erase scratch storage */
   std::unordered_map<std::string, std::pair<std::string, std::vector<std::pair<std::string, std::string>>>> _named_args_templates; /** Avoid re-formating the same named args log template each time */
   std::unordered_map<std::string, std::atomic<bool>*> _logger_removal_flags; /** Maps logger names to atomic flags used for synchronizing remove_logger_blocking(). */
   std::string _named_args_format_template; /** to avoid allocation each time **/
@@ -1715,6 +2332,8 @@ private:
   std::chrono::steady_clock::time_point _last_sink_flush_time;
   std::atomic<uint32_t> _worker_thread_id{0};  /** cached backend worker thread id */
   std::atomic<bool> _is_worker_running{false}; /** The spawned backend thread status */
+  std::atomic<bool> _has_worker_thread_exited{true}; /** Set to true when the backend thread completes its exit sequence */
+  std::atomic<bool> _is_rdtsc_clock_config_valid{true}; /** Cached for concurrent clock conversions. */
 
   alignas(QUILL_CACHE_LINE_ALIGNED) std::atomic<RdtscClock*> _rdtsc_clock{
     nullptr}; /** rdtsc clock if enabled, can be accessed by any thread **/
@@ -1724,7 +2343,7 @@ private:
 };
 
 #if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
-#pragma warning(pop)
+  #pragma warning(pop)
 #endif
 
 } // namespace detail

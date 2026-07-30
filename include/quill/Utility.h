@@ -6,16 +6,65 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 #include "quill/core/Attributes.h"
+#include "quill/core/QuillError.h"
 
 QUILL_BEGIN_NAMESPACE
 
+QUILL_BEGIN_EXPORT
+
 namespace utility
 {
+/**
+ * @brief Escapes a single CSV field according to RFC 4180.
+ *
+ * CsvWriter::append_row() writes fields verbatim; a string field containing a comma, double
+ * quote or line break would corrupt the CSV structure. This opt-in helper wraps such a field
+ * in double quotes and doubles any embedded double quotes. Fields without special characters
+ * are returned unchanged.
+ *
+ * @note The helper returns a new std::string; when used on the hot path prefer calling it only
+ * for fields that can actually contain special characters.
+ *
+ * @param field The field value to escape.
+ * @return The escaped field value.
+ */
+QUILL_NODISCARD inline std::string csv_escape_field(std::string_view field)
+{
+  if (field.find_first_of(",\"\r\n") == std::string_view::npos)
+  {
+    return std::string{field};
+  }
+
+  size_t quote_count{0};
+  for (size_t pos = field.find('"'); pos != std::string_view::npos; pos = field.find('"', pos + 1u))
+  {
+    ++quote_count;
+  }
+
+  std::string escaped;
+  escaped.reserve(field.size() + 2u + quote_count);
+  escaped += '"';
+
+  for (char const c : field)
+  {
+    if (c == '"')
+    {
+      escaped += '"';
+    }
+    escaped += c;
+  }
+
+  escaped += '"';
+  return escaped;
+}
+
 /**
  * @brief Formats the given buffer to hexadecimal representation.
  *
@@ -40,7 +89,7 @@ QUILL_NODISCARD std::string to_hex(T const* buffer, size_t size, bool uppercase 
     "404142434445464748494a4b4c4d4e4f"
     "505152535455565758595a5b5c5d5e5f"
     "606162636465666768696a6b6c6d6e6f"
-    "707172737475767778797a7b7c7c7e7f"
+    "707172737475767778797a7b7c7d7e7f"
     "808182838485868788898a8b8c8d8e8f"
     "909192939495969798999a9b9c9d9e9f"
     "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf"
@@ -71,6 +120,13 @@ QUILL_NODISCARD std::string to_hex(T const* buffer, size_t size, bool uppercase 
   if (QUILL_UNLIKELY(!buffer || size == 0))
   {
     return std::string{};
+  }
+
+  if (QUILL_UNLIKELY(size > ((SIZE_MAX - 1u) / 3u)))
+  {
+    // the output size computation below would wrap, allocating an undersized string that the
+    // write loops then overflow; realistically reachable only on 32-bit targets
+    QUILL_THROW(QuillError{"to_hex input size is too large"});
   }
 
   char const* hex_table = uppercase ? hex_table_upper : hex_table_lower;
@@ -117,4 +173,21 @@ QUILL_NODISCARD std::string to_hex(T const* buffer, size_t size, bool uppercase 
 }
 } // namespace utility
 
+QUILL_END_EXPORT
+
 QUILL_END_NAMESPACE
+
+#ifndef QUILL_DEFINE_SEQUENTIAL_THREAD_ID
+  #if defined(QUILL_USE_SEQUENTIAL_THREAD_ID)
+    #define QUILL_DEFINE_SEQUENTIAL_THREAD_ID                                                      \
+      QUILL_BEGIN_NAMESPACE                                                                        \
+      namespace detail                                                                             \
+      {                                                                                            \
+      std::atomic<uint32_t> g_next_thread_id{0};                                                   \
+      QUILL_THREAD_LOCAL uint32_t g_cached_thread_id{0};                                           \
+      }                                                                                            \
+      QUILL_END_NAMESPACE
+  #else
+    #define QUILL_DEFINE_SEQUENTIAL_THREAD_ID
+  #endif
+#endif

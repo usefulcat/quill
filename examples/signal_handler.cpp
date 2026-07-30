@@ -11,6 +11,11 @@
 #include <utility>
 #include <vector>
 
+/**
+ * This example shows how to start Quill with its built-in signal handler so
+ * logs can be flushed when the process crashes or is terminated.
+ */
+
 void cause_segfault(quill::Logger* logger)
 {
   LOG_INFO(logger, "Crashing");
@@ -35,15 +40,11 @@ void illegal_instruction(quill::Logger* logger)
   raise(SIGILL);
 }
 
-/**
- * Signal handler example
- * The signal handler flushes the log when the application crashes or gets terminated
- */
-
 int main()
 {
 #if defined(_WIN32)
-  // NOTE: On windows a signal handler must be installed on each new thread
+  // NOTE: On Windows a CRT signal handler must be installed on each frontend/user thread
+  // that needs CRT signal handling. Do not install it on the backend worker thread.
   quill::init_signal_handler<quill::FrontendOptions>();
 #endif
 
@@ -63,7 +64,7 @@ int main()
       [logger]()
       {
 #if defined(_WIN32)
-        // NOTE: On windows the signal handler must be installed on each new thread
+        // NOTE: On Windows the CRT signal handler must be installed on each frontend/user thread.
         quill::init_signal_handler<quill::FrontendOptions>();
 #endif
         // sleep for 1 second so all threads are ready

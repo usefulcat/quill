@@ -6,11 +6,29 @@
 #include <algorithm>
 #include <cstdlib>
 #include <ctime>
+#include <string>
+#include <string_view>
 
 TEST_SUITE_BEGIN("TransitEventBuffer");
 
 using namespace quill;
 using namespace quill::detail;
+
+/***/
+TEST_CASE("runtime_metadata_truncates_oversized_file_path")
+{
+  std::string file_path(65'530, 'a');
+  file_path += "/forwarded.cpp";
+
+  TransitEvent::RuntimeMetadata const runtime_metadata{
+    file_path.c_str(), 42u, "forwarded", "", "message", LogLevel::Info};
+
+  std::string_view const file_name = runtime_metadata.macro_metadata.file_name();
+  REQUIRE_EQ(file_name.size(), std::string_view{"forwarded.cpp"}.size());
+  REQUIRE_EQ(file_name, std::string_view{"forwarded.cpp"});
+  REQUIRE_STREQ(runtime_metadata.macro_metadata.line(), "42");
+  REQUIRE_STREQ(runtime_metadata.macro_metadata.short_source_location(), "forwarded.cpp:42");
+}
 
 /***/
 TEST_CASE("transit_event_unbounded_buffer")
@@ -28,8 +46,8 @@ TEST_CASE("transit_event_unbounded_buffer")
       REQUIRE(te1);
 
       te1->extra_data = std::make_unique<TransitEvent::ExtraData>();
-      te1->get_named_args()->clear();
-      te1->get_named_args()->emplace_back(std::string{"test1"} + std::to_string(i), std::string{});
+      te1->extra_data->named_args.clear();
+      te1->extra_data->named_args.emplace_back(std::string{"test1"} + std::to_string(i), std::string{});
       bte.push_back();
     }
 
@@ -40,8 +58,8 @@ TEST_CASE("transit_event_unbounded_buffer")
       REQUIRE(te2);
 
       te2->extra_data = std::make_unique<TransitEvent::ExtraData>();
-      te2->get_named_args()->clear();
-      te2->get_named_args()->emplace_back(std::string{"test2"} + std::to_string(i), std::string{});
+      te2->extra_data->named_args.clear();
+      te2->extra_data->named_args.emplace_back(std::string{"test2"} + std::to_string(i), std::string{});
       bte.push_back();
     }
 
@@ -52,8 +70,8 @@ TEST_CASE("transit_event_unbounded_buffer")
       REQUIRE(te3);
 
       te3->extra_data = std::make_unique<TransitEvent::ExtraData>();
-      te3->get_named_args()->clear();
-      te3->get_named_args()->emplace_back(std::string{"test3"} + std::to_string(i), std::string{});
+      te3->extra_data->named_args.clear();
+      te3->extra_data->named_args.emplace_back(std::string{"test3"} + std::to_string(i), std::string{});
       bte.push_back();
     }
 
@@ -64,8 +82,8 @@ TEST_CASE("transit_event_unbounded_buffer")
       REQUIRE(te4);
 
       te4->extra_data = std::make_unique<TransitEvent::ExtraData>();
-      te4->get_named_args()->clear();
-      te4->get_named_args()->emplace_back(std::string{"test4"} + std::to_string(i), std::string{});
+      te4->extra_data->named_args.clear();
+      te4->extra_data->named_args.emplace_back(std::string{"test4"} + std::to_string(i), std::string{});
       bte.push_back();
     }
 
@@ -79,7 +97,7 @@ TEST_CASE("transit_event_unbounded_buffer")
       TransitEvent* te1 = bte.front();
       REQUIRE(te1);
       std::string const expected = std::string{"test1"} + std::to_string(i);
-      REQUIRE_STREQ((*te1->get_named_args())[0].first.data(), expected.data());
+      REQUIRE_STREQ(te1->extra_data->named_args[0].first.data(), expected.data());
       bte.pop_front();
     }
 
@@ -89,7 +107,7 @@ TEST_CASE("transit_event_unbounded_buffer")
       TransitEvent* te2 = bte.front();
       REQUIRE(te2);
       std::string const expected = std::string{"test2"} + std::to_string(i);
-      REQUIRE_STREQ((*te2->get_named_args())[0].first.data(), expected.data());
+      REQUIRE_STREQ(te2->extra_data->named_args[0].first.data(), expected.data());
       bte.pop_front();
     }
 
@@ -99,7 +117,7 @@ TEST_CASE("transit_event_unbounded_buffer")
       TransitEvent* te3 = bte.front();
       REQUIRE(te3);
       std::string const expected = std::string{"test3"} + std::to_string(i);
-      REQUIRE_STREQ((*te3->get_named_args())[0].first.data(), expected.data());
+      REQUIRE_STREQ(te3->extra_data->named_args[0].first.data(), expected.data());
       bte.pop_front();
     }
 
@@ -109,7 +127,7 @@ TEST_CASE("transit_event_unbounded_buffer")
       TransitEvent* te4 = bte.front();
       REQUIRE(te4);
       std::string const expected = std::string{"test4"} + std::to_string(i);
-      REQUIRE_STREQ((*te4->get_named_args())[0].first.data(), expected.data());
+      REQUIRE_STREQ(te4->extra_data->named_args[0].first.data(), expected.data());
       bte.pop_front();
     }
 
@@ -145,8 +163,8 @@ TEST_CASE("transit_event_large_format_buffer_with_reallocations")
 
     // Also store named args with iteration number for validation
     te->extra_data = std::make_unique<TransitEvent::ExtraData>();
-    te->get_named_args()->clear();
-    te->get_named_args()->emplace_back("iteration_" + std::to_string(iteration), std::to_string(buffer_size));
+    te->extra_data->named_args.clear();
+    te->extra_data->named_args.emplace_back("iteration_" + std::to_string(iteration), std::to_string(buffer_size));
 
     expected_data.emplace_back(buffer_size, large_string);
 
@@ -183,8 +201,8 @@ TEST_CASE("transit_event_large_format_buffer_with_reallocations")
       // Verify named_args are intact
       std::string expected_key = "iteration_" + std::to_string(i);
       std::string expected_value = std::to_string(expected_data[i].first);
-      REQUIRE_STREQ((*te->get_named_args())[0].first.data(), expected_key.data());
-      REQUIRE_STREQ((*te->get_named_args())[0].second.data(), expected_value.data());
+      REQUIRE_STREQ(te->extra_data->named_args[0].first.data(), expected_key.data());
+      REQUIRE_STREQ(te->extra_data->named_args[0].second.data(), expected_value.data());
     }
 
     bte.pop_front();
@@ -213,8 +231,8 @@ TEST_CASE("transit_event_buffer_shrink_and_regrow")
     te->formatted_msg->append(data.data(), data.data() + data.size());
 
     te->extra_data = std::make_unique<TransitEvent::ExtraData>();
-    te->get_named_args()->clear();
-    te->get_named_args()->emplace_back(data, std::to_string(i));
+    te->extra_data->named_args.clear();
+    te->extra_data->named_args.emplace_back(data, std::to_string(i));
 
     bte.push_back();
   }
@@ -255,8 +273,8 @@ TEST_CASE("transit_event_buffer_shrink_and_regrow")
     te->formatted_msg->append(large_data.data(), large_data.data() + large_data.size());
 
     te->extra_data = std::make_unique<TransitEvent::ExtraData>();
-    te->get_named_args()->clear();
-    te->get_named_args()->emplace_back("regrow_" + std::to_string(i), std::to_string(buffer_size));
+    te->extra_data->named_args.clear();
+    te->extra_data->named_args.emplace_back("regrow_" + std::to_string(i), std::to_string(buffer_size));
 
     bte.push_back();
   }
@@ -275,7 +293,7 @@ TEST_CASE("transit_event_buffer_shrink_and_regrow")
     REQUIRE_EQ(actual, phase4_data[i].first);
 
     std::string expected_key = "regrow_" + std::to_string(i);
-    REQUIRE_STREQ((*te->get_named_args())[0].first.data(), expected_key.data());
+    REQUIRE_STREQ(te->extra_data->named_args[0].first.data(), expected_key.data());
 
     bte.pop_front();
   }
@@ -313,8 +331,8 @@ TEST_CASE("transit_event_buffer_interleaved_operations")
 
       // Test extra_data with named_args
       te->extra_data = std::make_unique<TransitEvent::ExtraData>();
-      te->get_named_args()->clear();
-      te->get_named_args()->emplace_back(key, std::to_string(buffer_size));
+      te->extra_data->named_args.clear();
+      te->extra_data->named_args.emplace_back(key, std::to_string(buffer_size));
 
       active_data.emplace_back(data, buffer_size);
       bte.push_back();
@@ -336,9 +354,9 @@ TEST_CASE("transit_event_buffer_interleaved_operations")
       REQUIRE_EQ(actual_msg, active_data[0].first);
 
       // Verify named_args are valid
-      REQUIRE(te->get_named_args());
-      REQUIRE_EQ(te->get_named_args()->size(), 1);
-      REQUIRE_EQ((*te->get_named_args())[0].second, std::to_string(active_data[0].second));
+      REQUIRE(te->extra_data);
+      REQUIRE_EQ(te->extra_data->named_args.size(), 1);
+      REQUIRE_EQ(te->extra_data->named_args[0].second, std::to_string(active_data[0].second));
 
       bte.pop_front();
       active_data.erase(active_data.begin());
@@ -419,8 +437,8 @@ TEST_CASE("transit_event_copy_to_backtrace_scenario")
   te1->formatted_msg->append(large_msg.data(), large_msg.data() + large_msg.size());
 
   te1->extra_data = std::make_unique<TransitEvent::ExtraData>();
-  te1->get_named_args()->emplace_back("key1", "value1");
-  te1->get_named_args()->emplace_back("key2", "value2");
+  te1->extra_data->named_args.emplace_back("key1", "value1");
+  te1->extra_data->named_args.emplace_back("key2", "value2");
 
   bte.push_back();
 
@@ -437,9 +455,9 @@ TEST_CASE("transit_event_copy_to_backtrace_scenario")
   REQUIRE_EQ(std::string_view(copy_event.formatted_msg->data(), copy_event.formatted_msg->size()), large_msg);
 
   REQUIRE(copy_event.extra_data);
-  REQUIRE_EQ(copy_event.get_named_args()->size(), 2);
-  REQUIRE_EQ((*copy_event.get_named_args())[0].first, "key1");
-  REQUIRE_EQ((*copy_event.get_named_args())[1].second, "value2");
+  REQUIRE_EQ(copy_event.extra_data->named_args.size(), 2);
+  REQUIRE_EQ(copy_event.extra_data->named_args[0].first, "key1");
+  REQUIRE_EQ(copy_event.extra_data->named_args[1].second, "value2");
 
   // Modify original and verify copy is unaffected
   std::string modified = "MODIFIED";

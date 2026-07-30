@@ -2,6 +2,7 @@
 
 #include "misc/TestUtilities.h"
 #include "quill/Backend.h"
+#include "quill/DeferredFormatCodec.h"
 #include "quill/Frontend.h"
 #include "quill/LogMacros.h"
 #include "quill/sinks/FileSink.h"
@@ -11,8 +12,97 @@
 #include <deque>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 using namespace quill;
+
+class DequeNoDefaultType
+{
+public:
+  explicit DequeNoDefaultType(std::string label, int value) : label(std::move(label)), value(value)
+  {
+  }
+
+  DequeNoDefaultType(DequeNoDefaultType const&) = default;
+  DequeNoDefaultType& operator=(DequeNoDefaultType const&) = default;
+  DequeNoDefaultType(DequeNoDefaultType&&) = default;
+  DequeNoDefaultType& operator=(DequeNoDefaultType&&) = default;
+
+  std::string label;
+  int value;
+};
+
+struct NonMoveAssignableInterval
+{
+  int start{0};
+  int end{0};
+};
+
+struct NonMoveAssignable
+{
+  NonMoveAssignable() = default;
+  NonMoveAssignable(NonMoveAssignableInterval interval, bool based)
+    : interval{interval}, based{based}
+  {
+  }
+  NonMoveAssignable(NonMoveAssignable const&) = default;
+  NonMoveAssignable(NonMoveAssignable&&) = default;
+  NonMoveAssignable& operator=(NonMoveAssignable const&) = delete;
+  NonMoveAssignable& operator=(NonMoveAssignable&&) = delete;
+
+  NonMoveAssignableInterval const interval{};
+  bool based{};
+};
+
+static_assert(std::is_default_constructible_v<NonMoveAssignable>);
+static_assert(std::is_move_constructible_v<NonMoveAssignable>);
+static_assert(!std::is_move_assignable_v<NonMoveAssignable>);
+static_assert(std::is_constructible_v<NonMoveAssignable, NonMoveAssignable&&>);
+
+template <>
+struct fmtquill::formatter<DequeNoDefaultType>
+{
+  template <typename FormatContext>
+  constexpr auto parse(FormatContext& ctx)
+  {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(::DequeNoDefaultType const& deque_no_default_type, FormatContext& ctx) const
+  {
+    return fmtquill::format_to(ctx.out(), "DequeNoDefault(label: {}, value: {})",
+                               deque_no_default_type.label, deque_no_default_type.value);
+  }
+};
+
+template <>
+struct fmtquill::formatter<NonMoveAssignable>
+{
+  template <typename FormatContext>
+  constexpr auto parse(FormatContext& ctx)
+  {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(::NonMoveAssignable const& non_move_assignable, FormatContext& ctx) const
+  {
+    return fmtquill::format_to(ctx.out(), "NonMoveAssignable(interval: [{}, {}], based: {})",
+                               non_move_assignable.interval.start, non_move_assignable.interval.end,
+                               non_move_assignable.based);
+  }
+};
+
+template <>
+struct quill::Codec<DequeNoDefaultType> : quill::DeferredFormatCodec<DequeNoDefaultType>
+{
+};
+
+template <>
+struct quill::Codec<NonMoveAssignable> : quill::DeferredFormatCodec<NonMoveAssignable>
+{
+};
 
 /***/
 TEST_CASE("std_deque_logging")
@@ -165,6 +255,20 @@ TEST_CASE("std_deque_logging")
 
     // Test with temporary deque
     LOG_INFO(logger, "temp_deque {}", std::deque<std::string>{"temp1", "temp2", "temp3"});
+
+    std::deque<DequeNoDefaultType> no_default_deque;
+    no_default_deque.emplace_back("left", 1);
+    no_default_deque.emplace_back("right", 2);
+    LOG_INFO(logger, "no_default_deque {}", no_default_deque);
+
+    LOG_INFO(logger, "temp_no_default_deque {}",
+             std::deque<DequeNoDefaultType>{DequeNoDefaultType{"temp_left", 3},
+                                            DequeNoDefaultType{"temp_right", 4}});
+
+    std::deque<NonMoveAssignable> non_move_assignable_deque = {
+      NonMoveAssignable{NonMoveAssignableInterval{1, 5}, true},
+      NonMoveAssignable{NonMoveAssignableInterval{8, 13}, false}};
+    LOG_INFO(logger, "non_move_assignable_deque {}", non_move_assignable_deque);
   }
 
   logger->flush_log();
@@ -271,6 +375,15 @@ TEST_CASE("std_deque_logging")
 
   REQUIRE(quill::testing::file_contains(
     file_contents, std::string{"LOG_INFO      " + logger_name + "       temp_deque [\"temp1\", \"temp2\", \"temp3\"]"}));
+
+  REQUIRE(quill::testing::file_contains(
+    file_contents, std::string{"LOG_INFO      " + logger_name + "       no_default_deque [DequeNoDefault(label: left, value: 1), DequeNoDefault(label: right, value: 2)]"}));
+
+  REQUIRE(quill::testing::file_contains(
+    file_contents, std::string{"LOG_INFO      " + logger_name + "       temp_no_default_deque [DequeNoDefault(label: temp_left, value: 3), DequeNoDefault(label: temp_right, value: 4)]"}));
+
+  REQUIRE(quill::testing::file_contains(
+    file_contents, std::string{"LOG_INFO      " + logger_name + "       non_move_assignable_deque [NonMoveAssignable(interval: [1, 5], based: true), NonMoveAssignable(interval: [8, 13], based: false)]"}));
 
   testing::remove_file(filename);
 }

@@ -1,5 +1,6 @@
 #include "doctest/doctest.h"
 
+#include "quill/LogMacros.h"
 #include "quill/backend/PatternFormatter.h"
 #include "quill/core/Common.h"
 #include "quill/core/Filesystem.h"
@@ -40,14 +41,14 @@ TEST_CASE("default_pattern_formatter")
 
   auto const& formatted_buffer = default_pattern_formatter.format(
     ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata, &named_args,
-    std::string_view{log_msg.data(), log_msg.size()});
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   // Convert the buffer to a string
   std::string const formatted_string = fmtquill::to_string(formatted_buffer);
 
   // Default pattern formatter is using local time to convert the timestamp to timezone, in this test we ignore the timestamp
   std::string const expected_string =
-    "[31341] PatternFormatterTest.cpp:27  LOG_INFO      test_logger  This the pattern formatter "
+    "[31341] PatternFormatterTest.cpp:28  LOG_INFO      test_logger  This the pattern formatter "
     "1234\n";
   auto const found_expected = formatted_string.find(expected_string);
   REQUIRE_NE(found_expected, std::string::npos);
@@ -78,7 +79,7 @@ TEST_CASE("custom_pattern_message_only")
 
   auto const& formatted_buffer = custom_pattern_formatter.format(
     ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata, &named_args,
-    std::string_view{log_msg.data(), log_msg.size()});
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   // Convert the buffer to a string
   std::string const formatted_string = fmtquill::to_string(formatted_buffer);
@@ -104,7 +105,7 @@ TEST_CASE("custom_pattern_timestamp_precision_nanoseconds")
                                nullptr,
                                LogLevel::Debug,
                                MacroMetadata::Event::Log};
-
+  std::string const caller_function{macro_metadata.caller_function()};
   // Format to a buffer
   fmtquill::memory_buffer log_msg;
   fmtquill::format_to(std::back_inserter(log_msg),
@@ -114,15 +115,15 @@ TEST_CASE("custom_pattern_timestamp_precision_nanoseconds")
 
   auto const& formatted_buffer = custom_pattern_formatter.format(
     ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata, &named_args,
-    std::string_view{log_msg.data(), log_msg.size()});
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   // Convert the buffer to a string
   std::string const formatted_string = fmtquill::to_string(formatted_buffer);
 
   std::string const expected_string =
-    "01-23-2020 21:42:41.000023000 [31341] PatternFormatterTest.cpp:101 LOG_DEBUG test_logger "
-    "This the 1234 formatter pattern [DOCTEST_ANON_FUNC_7]\n";
-
+    "01-23-2020 21:42:41.000023000 [31341] PatternFormatterTest.cpp:102 LOG_DEBUG test_logger "
+    "This the 1234 formatter pattern [" +
+    caller_function + "]\n";
   REQUIRE_EQ(formatted_string, expected_string);
 }
 
@@ -142,7 +143,7 @@ TEST_CASE("custom_pattern_timestamp_precision_microseconds")
                                nullptr,
                                LogLevel::Debug,
                                MacroMetadata::Event::Log};
-
+  std::string const caller_function{macro_metadata.caller_function()};
   // Format to a buffer
   fmtquill::memory_buffer log_msg;
   fmtquill::format_to(std::back_inserter(log_msg),
@@ -152,15 +153,15 @@ TEST_CASE("custom_pattern_timestamp_precision_microseconds")
 
   auto const& formatted_buffer = custom_pattern_formatter.format(
     ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata, &named_args,
-    std::string_view{log_msg.data(), log_msg.size()});
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   // Convert the buffer to a string
   std::string const formatted_string = fmtquill::to_string(formatted_buffer);
 
   std::string const expected_string =
-    "01-23-2020 21:42:41.020123 [31341] PatternFormatterTest.cpp:139 LOG_DEBUG test_logger "
-    "This the 1234 formatter pattern [DOCTEST_ANON_FUNC_9]\n";
-
+    "01-23-2020 21:42:41.020123 [31341] PatternFormatterTest.cpp:140 LOG_DEBUG test_logger "
+    "This the 1234 formatter pattern [" +
+    caller_function + "]\n";
   REQUIRE_EQ(formatted_string, expected_string);
 }
 
@@ -180,7 +181,7 @@ TEST_CASE("custom_pattern_timestamp_precision_milliseconds")
                                nullptr,
                                LogLevel::Debug,
                                MacroMetadata::Event::Log};
-
+  std::string const caller_function{macro_metadata.caller_function()};
   // Format to a buffer
   fmtquill::memory_buffer log_msg;
   fmtquill::format_to(std::back_inserter(log_msg),
@@ -190,15 +191,15 @@ TEST_CASE("custom_pattern_timestamp_precision_milliseconds")
 
   auto const& formatted_buffer = custom_pattern_formatter.format(
     ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata, &named_args,
-    std::string_view{log_msg.data(), log_msg.size()});
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   // Convert the buffer to a string
   std::string const formatted_string = fmtquill::to_string(formatted_buffer);
 
   std::string const expected_string =
-    "01-23-2020 21:42:41.099 [31341] PatternFormatterTest.cpp:177 LOG_DEBUG test_logger This "
-    "the 1234 formatter pattern [DOCTEST_ANON_FUNC_11]\n";
-
+    "01-23-2020 21:42:41.099 [31341] PatternFormatterTest.cpp:178 LOG_DEBUG test_logger This "
+    "the 1234 formatter pattern [" +
+    caller_function + "]\n";
   REQUIRE_EQ(formatted_string, expected_string);
 }
 
@@ -218,7 +219,7 @@ TEST_CASE("custom_pattern_timestamp_precision_none")
                                nullptr,
                                LogLevel::Debug,
                                MacroMetadata::Event::Log};
-
+  std::string const caller_function{macro_metadata.caller_function()};
   // Format to a buffer
   fmtquill::memory_buffer log_msg;
   fmtquill::format_to(std::back_inserter(log_msg),
@@ -228,15 +229,15 @@ TEST_CASE("custom_pattern_timestamp_precision_none")
 
   auto const& formatted_buffer = custom_pattern_formatter.format(
     ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata, &named_args,
-    std::string_view{log_msg.data(), log_msg.size()});
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   // Convert the buffer to a string
   std::string const formatted_string = fmtquill::to_string(formatted_buffer);
 
   std::string const expected_string =
-    "01-23-2020 21:42:41 [31341] PatternFormatterTest.cpp:215 LOG_DEBUG test_logger This the "
-    "1234 formatter pattern [DOCTEST_ANON_FUNC_13]\n";
-
+    "01-23-2020 21:42:41 [31341] PatternFormatterTest.cpp:216 LOG_DEBUG test_logger This the "
+    "1234 formatter pattern [" +
+    caller_function + "]\n";
   REQUIRE_EQ(formatted_string, expected_string);
 }
 
@@ -257,7 +258,7 @@ TEST_CASE("custom_pattern_timestamp_strftime_reallocation_on_format_string_2")
                                nullptr,
                                LogLevel::Debug,
                                MacroMetadata::Event::Log};
-
+  std::string const caller_function{macro_metadata.caller_function()};
   for (size_t i = 0; i < 5; ++i)
   {
     // Format to a buffer
@@ -269,15 +270,15 @@ TEST_CASE("custom_pattern_timestamp_strftime_reallocation_on_format_string_2")
 
     auto const& formatted_buffer = custom_pattern_formatter.format(
       ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata,
-      &named_args, std::string_view{log_msg.data(), log_msg.size()});
+      &named_args, std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
     // Convert the buffer to a string
     std::string const formatted_string = fmtquill::to_string(formatted_buffer);
 
     std::string const expected_string =
-      "2020-01-23T21:42:41.0992202020-01-23T21:42:41 [31341] PatternFormatterTest.cpp:254 "
-      "LOG_DEBUG test_logger This the 1234 formatter pattern [DOCTEST_ANON_FUNC_15]\n";
-
+      "2020-01-23T21:42:41.0992202020-01-23T21:42:41 [31341] PatternFormatterTest.cpp:255 "
+      "LOG_DEBUG test_logger This the 1234 formatter pattern [" +
+      caller_function + "]\n";
     REQUIRE_EQ(formatted_string, expected_string);
   }
 }
@@ -299,7 +300,7 @@ TEST_CASE("custom_pattern_timestamp_strftime_reallocation_when_adding_fractional
                                nullptr,
                                LogLevel::Debug,
                                MacroMetadata::Event::Log};
-
+  std::string const caller_function{macro_metadata.caller_function()};
   for (size_t i = 0; i < 5; ++i)
   {
     // Format to a buffer
@@ -311,23 +312,23 @@ TEST_CASE("custom_pattern_timestamp_strftime_reallocation_when_adding_fractional
 
     auto const& formatted_buffer = custom_pattern_formatter.format(
       ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata,
-      &named_args, std::string_view{log_msg.data(), log_msg.size()});
+      &named_args, std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
     // Convert the buffer to a string
     std::string const formatted_string = fmtquill::to_string(formatted_buffer);
 
     std::string const expected_string =
-      "2020-01-23T21:42:41.21:42:41.0992202020-01-23T21:42:41 [31341] PatternFormatterTest.cpp:296 "
-      "LOG_DEBUG test_logger This the 1234 formatter pattern [DOCTEST_ANON_FUNC_17]\n";
-
+      "2020-01-23T21:42:41.21:42:41.0992202020-01-23T21:42:41 [31341] PatternFormatterTest.cpp:297 "
+      "LOG_DEBUG test_logger This the 1234 formatter pattern [" +
+      caller_function + "]\n";
     REQUIRE_EQ(formatted_string, expected_string);
   }
 }
 
-#ifndef QUILL_NO_EXCEPTIONS
 TEST_CASE("invalid_pattern")
 {
   // missing %)
+#if !defined(QUILL_NO_EXCEPTIONS)
   REQUIRE_THROWS_AS(PatternFormatter(PatternFormatterOptions{
                       "%(time [%(thread_id)] %(file_name):%(line_number) %(log_level) %(logger) "
                       "%(message) [%(caller_function)]",
@@ -341,8 +342,77 @@ TEST_CASE("invalid_pattern")
       "%(message) [%(caller_function)]",
       "%H:%M:%S.%Qns", Timezone::GmtTime, false}),
     quill::QuillError);
-}
+
+  // duplicate attribute would otherwise bind one placeholder to an unset fmt argument
+  REQUIRE_THROWS_AS(
+    PatternFormatter(PatternFormatterOptions{"%(time) [%(thread_id)] %(message) %(message)",
+                                             "%H:%M:%S.%Qns", Timezone::GmtTime, false}),
+    quill::QuillError);
 #endif
+}
+
+TEST_CASE("pattern_with_percent_not_followed_by_paren_is_literal")
+{
+  // A stray '%' not followed by '(' must be treated as a literal character, not crash the parser
+  // (verifies the short-circuit guard in the pattern-parse loop against an npos underflow when
+  // find_first_of('(', ...) finds no subsequent '(' in the remainder of the pattern).
+  // Quill does not do %% escaping; a bare '%' stays literal.
+  PatternFormatter formatter{
+    PatternFormatterOptions{"progress 50% | %(message)", "%H:%M:%S.%Qns", Timezone::GmtTime, false}};
+
+  uint64_t const ts{1579815761000023000};
+  char const* thread_id = "31341";
+  std::string const logger_name = "test_logger";
+  MacroMetadata macro_metadata{
+    __FILE__ ":" QUILL_STRINGIFY(__LINE__), __func__, "hello", nullptr, LogLevel::Info, MacroMetadata::Event::Log};
+
+  fmtquill::memory_buffer log_msg;
+  fmtquill::format_to(std::back_inserter(log_msg), fmtquill::runtime(macro_metadata.message_format()));
+
+  std::vector<std::pair<std::string, std::string>> named_args;
+  auto const& formatted_buffer =
+    formatter.format(ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata,
+                     &named_args, std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
+
+  std::string const formatted_string = fmtquill::to_string(formatted_buffer);
+  REQUIRE_EQ(formatted_string, "progress 50% | hello\n");
+}
+
+TEST_CASE("pattern_trailing_percent_is_literal")
+{
+  // Edge case: '%' at the very end of the pattern, with no following character at all.
+  // If find_first_of('(', pos) returned npos without a short-circuit guard this would underflow.
+  PatternFormatter formatter{
+    PatternFormatterOptions{"%(message) done%", "%H:%M:%S.%Qns", Timezone::GmtTime, false}};
+
+  uint64_t const ts{1579815761000023000};
+  char const* thread_id = "31341";
+  std::string const logger_name = "test_logger";
+  MacroMetadata macro_metadata{
+    __FILE__ ":" QUILL_STRINGIFY(__LINE__), __func__, "hello", nullptr, LogLevel::Info, MacroMetadata::Event::Log};
+
+  fmtquill::memory_buffer log_msg;
+  fmtquill::format_to(std::back_inserter(log_msg), fmtquill::runtime(macro_metadata.message_format()));
+
+  std::vector<std::pair<std::string, std::string>> named_args;
+  auto const& formatted_buffer =
+    formatter.format(ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata,
+                     &named_args, std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
+
+  std::string const formatted_string = fmtquill::to_string(formatted_buffer);
+  REQUIRE_EQ(formatted_string, "hello done%\n");
+}
+
+TEST_CASE("pattern_with_empty_paren_attribute_throws")
+{
+  // "%()" -> attr_name becomes empty; should reject cleanly rather than crash
+  // (verifies attr.substr(2, attr.size()) is safe when attr is just "%(").
+#if !defined(QUILL_NO_EXCEPTIONS)
+  REQUIRE_THROWS_AS(
+    PatternFormatter(PatternFormatterOptions{"%() %(message)", "%H:%M:%S.%Qns", Timezone::GmtTime, false}),
+    quill::QuillError);
+#endif
+}
 
 TEST_CASE("custom_pattern")
 {
@@ -370,13 +440,13 @@ TEST_CASE("custom_pattern")
 
   auto const& formatted_buffer = custom_pattern_formatter.format(
     ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata, &named_args,
-    std::string_view{log_msg.data(), log_msg.size()});
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   // Convert the buffer to a string
   std::string const formatted_string = fmtquill::to_string(formatted_buffer);
 
   std::string const expected_string =
-    "01-23-2020 21:42:41.000023000 [31341] PatternFormatterTest.cpp:357 LOG_DEBUG test_logger "
+    "01-23-2020 21:42:41.000023000 [31341] PatternFormatterTest.cpp:427 LOG_DEBUG test_logger "
     "This the 1234 formatter pattern\n";
 
   REQUIRE_EQ(formatted_string, expected_string);
@@ -409,7 +479,7 @@ TEST_CASE("custom_pattern_part_3_no_format_specifiers")
 
   auto const& formatted_buffer = custom_pattern_formatter.format(
     ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata, &named_args,
-    std::string_view{log_msg.data(), log_msg.size()});
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   // Convert the buffer to a string
   std::string const formatted_string = fmtquill::to_string(formatted_buffer);
@@ -441,9 +511,9 @@ TEST_CASE("empty_format_pattern")
 
   std::vector<std::pair<std::string, std::string>> named_args;
 
-  auto const& formatted_buffer =
-    empty_formatter.format(ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata,
-                           &named_args, std::string_view{log_msg.data(), log_msg.size()});
+  auto const& formatted_buffer = empty_formatter.format(
+    ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata, &named_args,
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   // Convert the buffer to a string
   std::string const formatted_string = fmtquill::to_string(formatted_buffer);
@@ -472,7 +542,7 @@ TEST_CASE("pattern_timestamp_move_constructor")
                                nullptr,
                                LogLevel::Debug,
                                MacroMetadata::Event::Log};
-
+  std::string const caller_function{macro_metadata.caller_function()};
   // Format to a buffer
   fmtquill::memory_buffer log_msg;
   fmtquill::format_to(std::back_inserter(log_msg),
@@ -482,15 +552,15 @@ TEST_CASE("pattern_timestamp_move_constructor")
 
   auto const& formatted_buffer = pattern_formatter_move.format(
     ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata, &named_args,
-    std::string_view{log_msg.data(), log_msg.size()});
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   // Convert the buffer to a string
   std::string const formatted_string = fmtquill::to_string(formatted_buffer);
 
   std::string const expected_string =
-    "01-23-2020 21:42:41.000023000 [31341] PatternFormatterTest.cpp:469 LOG_DEBUG test_logger "
-    "This the 1234 formatter pattern [DOCTEST_ANON_FUNC_27]\n";
-
+    "01-23-2020 21:42:41.000023000 [31341] PatternFormatterTest.cpp:539 LOG_DEBUG test_logger "
+    "This the 1234 formatter pattern [" +
+    caller_function + "]\n";
   REQUIRE_EQ(formatted_string, expected_string);
 }
 
@@ -521,14 +591,14 @@ TEST_CASE("pattern_formatter_source_location_prefix")
 
     auto const& formatted_buffer =
       pattern_formatter.format(ts, thread_id, thread_name, process_id, logger_name, "INFO", "I",
-                               macro_metadata, &named_args, std::string_view{});
+                               macro_metadata, &named_args, std::string_view{}, std::string_view{});
 
     std::string const formatted_string = fmtquill::to_string(formatted_buffer);
 
 #if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
-    std::string const expected_string = "test\\unit_tests\\PatternFormatterTest.cpp:504\n";
+    std::string const expected_string = "test\\unit_tests\\PatternFormatterTest.cpp:574\n";
 #else
-    std::string const expected_string = "test/unit_tests/PatternFormatterTest.cpp:504\n";
+    std::string const expected_string = "test/unit_tests/PatternFormatterTest.cpp:574\n";
 #endif
 
     REQUIRE_EQ(formatted_string, expected_string);
@@ -541,14 +611,14 @@ TEST_CASE("pattern_formatter_source_location_prefix")
 
     auto const& formatted_buffer =
       pattern_formatter.format(ts, thread_id, thread_name, process_id, logger_name, "INFO", "I",
-                               macro_metadata, &named_args, std::string_view{});
+                               macro_metadata, &named_args, std::string_view{}, std::string_view{});
 
     std::string const formatted_string = fmtquill::to_string(formatted_buffer);
 
 #if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
-    std::string const expected_string = "test\\unit_tests\\PatternFormatterTest.cpp:504\n";
+    std::string const expected_string = "test\\unit_tests\\PatternFormatterTest.cpp:574\n";
 #else
-    std::string const expected_string = "test/unit_tests/PatternFormatterTest.cpp:504\n";
+    std::string const expected_string = "test/unit_tests/PatternFormatterTest.cpp:574\n";
 #endif
 
     REQUIRE_EQ(formatted_string, expected_string);
@@ -562,7 +632,7 @@ TEST_CASE("pattern_formatter_process_function_name")
   char const* thread_id = "31341";
   std::string const logger_name = "test_logger";
   MacroMetadata macro_metadata{
-    __FILE__ ":" QUILL_STRINGIFY(__LINE__), __func__, "{}}", nullptr, LogLevel::Info, MacroMetadata::Event::Log};
+    __FILE__ ":" QUILL_STRINGIFY(__LINE__), "test_function_42", "{}}", nullptr, LogLevel::Info, MacroMetadata::Event::Log};
 
   PatternFormatterOptions po;
   po.format_pattern = "%(caller_function)";
@@ -597,11 +667,11 @@ TEST_CASE("pattern_formatter_process_function_name")
 
   auto const& formatted_buffer =
     pattern_formatter.format(ts, thread_id, thread_name, process_id, logger_name, "INFO", "I",
-                             macro_metadata, &named_args, std::string_view{});
+                             macro_metadata, &named_args, std::string_view{}, std::string_view{});
 
-  // in this test we remove e.g. _31 from the function name with process_function_name
+  // In this test we remove _42 from the function name with process_function_name.
   std::string const formatted_string = fmtquill::to_string(formatted_buffer);
-  std::string const expected_string = "DOCTEST_ANON_FUNC\n";
+  std::string const expected_string = "test_function\n";
   REQUIRE_EQ(formatted_string, expected_string);
 }
 
@@ -868,7 +938,7 @@ TEST_CASE("pattern_suffix_nullopt")
 
   auto const& formatted_buffer = custom_pattern_formatter.format(
     ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata, &named_args,
-    std::string_view{log_msg.data(), log_msg.size()});
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   // Convert the buffer to a string
   std::string const formatted_string = fmtquill::to_string(formatted_buffer);
@@ -902,7 +972,7 @@ TEST_CASE("pattern_suffix_custom_char")
 
   auto const& formatted_buffer = custom_pattern_formatter.format(
     ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata, &named_args,
-    std::string_view{log_msg.data(), log_msg.size()});
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   // Convert the buffer to a string
   std::string const formatted_string = fmtquill::to_string(formatted_buffer);
@@ -941,7 +1011,7 @@ TEST_CASE("pattern_suffix_newline_trimming")
   // Test with newline suffix - should trim trailing newline from message
   auto const& formatted_buffer_newline = formatter_newline.format(
     ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata, &named_args,
-    std::string_view{log_msg.data(), log_msg.size()});
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   std::string const formatted_string_newline = fmtquill::to_string(formatted_buffer_newline);
   std::string const expected_string_newline =
@@ -950,9 +1020,9 @@ TEST_CASE("pattern_suffix_newline_trimming")
   REQUIRE_EQ(formatted_string_newline, expected_string_newline);
 
   // Test with custom suffix - should NOT trim trailing newline from message
-  auto const& formatted_buffer_custom =
-    formatter_custom.format(ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata,
-                            &named_args, std::string_view{log_msg.data(), log_msg.size()});
+  auto const& formatted_buffer_custom = formatter_custom.format(
+    ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata, &named_args,
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   std::string const formatted_string_custom = fmtquill::to_string(formatted_buffer_custom);
   std::string const expected_string_custom =
@@ -990,7 +1060,7 @@ TEST_CASE("pattern_suffix_multiline_with_custom_suffix")
 
     auto const& formatted_buffer_custom = formatter_custom.format(
       ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata, &named_args,
-      std::string_view{log_msg.data(), log_msg.size()});
+      std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
     std::string const formatted_string_custom = fmtquill::to_string(formatted_buffer_custom);
     // Multi-line processing: finds \n in message to split lines, applies custom suffix to each
@@ -1000,7 +1070,7 @@ TEST_CASE("pattern_suffix_multiline_with_custom_suffix")
 
     auto const& formatted_buffer_newline = formatter_newline.format(
       ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata, &named_args,
-      std::string_view{log_msg.data(), log_msg.size()});
+      std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
     std::string const formatted_string_newline = fmtquill::to_string(formatted_buffer_newline);
     // With \n suffix: trailing \n in message is automatically skipped in multi-line loop
@@ -1023,7 +1093,7 @@ TEST_CASE("pattern_suffix_multiline_with_custom_suffix")
 
     auto const& formatted_buffer_custom = formatter_custom.format(
       ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata_no_trailing,
-      &named_args, std::string_view{log_msg.data(), log_msg.size()});
+      &named_args, std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
     std::string const formatted_string_custom = fmtquill::to_string(formatted_buffer_custom);
     // Should process each line with custom suffix, last line is "Line 3"
@@ -1032,7 +1102,7 @@ TEST_CASE("pattern_suffix_multiline_with_custom_suffix")
 
     auto const& formatted_buffer_newline = formatter_newline.format(
       ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata, &named_args,
-      std::string_view{log_msg.data(), log_msg.size()});
+      std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
     std::string const formatted_string_newline = fmtquill::to_string(formatted_buffer_newline);
     // Should process each line with newline suffix, last line is "Line 3"
@@ -1051,7 +1121,7 @@ TEST_CASE("pattern_suffix_multiline_with_custom_suffix")
 
     auto const& formatted_buffer_custom = formatter_custom.format(
       ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata_single,
-      &named_args, std::string_view{log_msg.data(), log_msg.size()});
+      &named_args, std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
     std::string const formatted_string_custom = fmtquill::to_string(formatted_buffer_custom);
     // Should process the line and the loop exits before processing the trailing \n
@@ -1060,7 +1130,7 @@ TEST_CASE("pattern_suffix_multiline_with_custom_suffix")
 
     auto const& formatted_buffer_newline = formatter_newline.format(
       ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata, &named_args,
-      std::string_view{log_msg.data(), log_msg.size()});
+      std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
     std::string const formatted_string_newline = fmtquill::to_string(formatted_buffer_newline);
     // Should process each line with newline suffix, last line is "Line 3"
@@ -1098,7 +1168,7 @@ TEST_CASE("pattern_suffix_binary_data_preservation")
   // Test with nullopt suffix - should preserve all 5 bytes
   auto const& formatted_buffer_nullopt = formatter_nullopt.format(
     ts, thread_id, thread_name, process_id, logger_name, "CRITICAL", "C", macro_metadata,
-    &named_args, std::string_view{log_msg.data(), log_msg.size()});
+    &named_args, std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   std::string const formatted_string_nullopt = fmtquill::to_string(formatted_buffer_nullopt);
   REQUIRE_EQ(formatted_string_nullopt.size(), 5); // All 5 bytes preserved
@@ -1107,7 +1177,7 @@ TEST_CASE("pattern_suffix_binary_data_preservation")
   // Test with newline suffix - should trim trailing \n from message and add pattern \n
   auto const& formatted_buffer_newline = formatter_newline.format(
     ts, thread_id, thread_name, process_id, logger_name, "CRITICAL", "C", macro_metadata,
-    &named_args, std::string_view{log_msg.data(), log_msg.size()});
+    &named_args, std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
   std::string const formatted_string_newline = fmtquill::to_string(formatted_buffer_newline);
   REQUIRE_EQ(formatted_string_newline.size(), 5); // 4 bytes + 1 pattern newline
@@ -1141,7 +1211,7 @@ TEST_CASE("pattern_suffix_multiline_metadata_with_no_suffix")
 
     auto const& formatted_buffer_no_suffix = formatter_no_suffix.format(
       ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata, &named_args,
-      std::string_view{log_msg.data(), log_msg.size()});
+      std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
     std::string const formatted_string_no_suffix = fmtquill::to_string(formatted_buffer_no_suffix);
 
@@ -1159,7 +1229,7 @@ TEST_CASE("pattern_suffix_multiline_metadata_with_no_suffix")
 
     auto const& formatted_buffer_no_suffix = formatter_no_suffix.format(
       ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata, &named_args,
-      std::string_view{log_msg.data(), log_msg.size()});
+      std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
     std::string const formatted_string_no_suffix = fmtquill::to_string(formatted_buffer_no_suffix);
 
@@ -1177,7 +1247,7 @@ TEST_CASE("pattern_suffix_multiline_metadata_with_no_suffix")
 
     auto const& formatted_buffer_no_suffix = formatter_no_suffix.format(
       ts, thread_id, thread_name, process_id, logger_name, "INFO", "I", macro_metadata, &named_args,
-      std::string_view{log_msg.data(), log_msg.size()});
+      std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
 
     std::string const formatted_string_no_suffix = fmtquill::to_string(formatted_buffer_no_suffix);
 
@@ -1187,6 +1257,52 @@ TEST_CASE("pattern_suffix_multiline_metadata_with_no_suffix")
 
     REQUIRE_EQ(formatted_string_no_suffix, expected_no_suffix);
   }
+}
+
+TEST_CASE("pattern_with_literal_braces")
+{
+  // Literal '{' and '}' in the format pattern must appear verbatim in the output. Previously
+  // they were passed unescaped into the fmt format string, silently swallowing attributes
+  // (adjacent braces formed '{{...}}' escapes and the leftover '{}' consumed the next
+  // attribute) or making every format call throw for unpaired braces
+  PatternFormatter custom_pattern_formatter{PatternFormatterOptions{
+    "{%(log_level_short_code)} { %(message) } trailing {", "%H:%M:%S.%Qns", Timezone::GmtTime, false}};
+
+  uint64_t const ts{1579815761000023000};
+  char const* thread_id = "31341";
+  std::string const logger_name = "test_logger";
+  MacroMetadata macro_metadata{
+    __FILE__ ":" QUILL_STRINGIFY(__LINE__), __func__, "hello {}", nullptr, LogLevel::Debug, MacroMetadata::Event::Log};
+
+  fmtquill::memory_buffer log_msg;
+  fmtquill::format_to(std::back_inserter(log_msg),
+                      fmtquill::runtime(macro_metadata.message_format()), "world");
+
+  std::vector<std::pair<std::string, std::string>> named_args;
+
+  auto const& formatted_buffer = custom_pattern_formatter.format(
+    ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata, &named_args,
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
+
+  std::string const formatted_string = fmtquill::to_string(formatted_buffer);
+  std::string const expected_string = "{D} { hello world } trailing {\n";
+
+  REQUIRE_EQ(formatted_string, expected_string);
+
+  // Keep compatibility with the traditional fmt spelling for literal braces.
+  PatternFormatter doubled_brace_formatter{
+    PatternFormatterOptions{"{{%(message)}}", "%H:%M:%S.%Qns", Timezone::GmtTime, false}};
+  auto const& doubled_brace_buffer = doubled_brace_formatter.format(
+    ts, thread_id, thread_name, process_id, logger_name, "DEBUG", "D", macro_metadata, &named_args,
+    std::string_view{log_msg.data(), log_msg.size()}, std::string_view{});
+  REQUIRE_EQ(fmtquill::to_string(doubled_brace_buffer), "{hello world}\n");
+
+#if !defined(QUILL_NO_EXCEPTIONS)
+  // Invalid fmt specifications must fail during construction, not later on the backend thread.
+  REQUIRE_THROWS_AS(PatternFormatter(PatternFormatterOptions{"%(message:invalid)", "%H:%M:%S.%Qns",
+                                                             Timezone::GmtTime, false}),
+                    quill::QuillError);
+#endif
 }
 
 TEST_SUITE_END();

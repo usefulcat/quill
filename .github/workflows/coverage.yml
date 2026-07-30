@@ -16,9 +16,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-
+    timeout-minutes: 60
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Configure
       run: cmake -Bbuild -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_STANDARD=17 -DQUILL_BUILD_TESTS=ON -DQUILL_CODE_COVERAGE=ON -DQUILL_BUILD_EXAMPLES=ON -DQUILL_VERBOSE_MAKEFILE=ON

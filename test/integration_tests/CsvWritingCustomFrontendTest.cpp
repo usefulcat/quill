@@ -14,13 +14,9 @@ struct OrderCsvSchema
 };
 
 // Define custom Frontend Options
-struct CustomFrontendOptions
+struct CustomFrontendOptions : quill::FrontendOptions
 {
   static constexpr quill::QueueType queue_type = quill::QueueType::BoundedBlocking;
-  static constexpr size_t initial_queue_capacity = 131'072;
-  static constexpr uint32_t blocking_queue_retry_interval_ns = 800;
-  static constexpr size_t unbounded_queue_max_capacity = 2ull * 1024u * 1024u * 1024u;
-  static constexpr quill::HugePagesPolicy huge_pages_policy = quill::HugePagesPolicy::Never;
 };
 
 /***/
@@ -37,6 +33,7 @@ TEST_CASE("csv_writing_custom_frontend")
     csv_writter.append_row(13212123, "AAPL", 100, 210.32321, "BUY");
     csv_writter.append_row(132121123, "META", 300, 478.32321, "SELL");
     csv_writter.append_row(14212123, "AAPL", 120, 210.42321, "BUY");
+    csv_writter.close();
   }
 
   // Wait until the backend thread stops for test stability

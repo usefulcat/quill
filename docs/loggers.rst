@@ -3,6 +3,8 @@
 Loggers
 =======
 
+Use this page to understand how to create, retrieve, configure, and remove loggers.
+
 ``Logger`` instances are created by users with a specified name, along with designated Sinks and a Formatter. Direct instantiation of logger objects is not possible; instead, they must first be created with the desired configurations.
 
 Upon creation, users specify the Sinks and Formatter for the logger. The logger name serves as an identifier, allowing the same logger configuration to be reused without re-specifying Sinks and Formatter settings.
@@ -29,8 +31,11 @@ Logger Creation
 Logger Retrieval
 ----------------
 
-Loggers can be obtained using either :cpp:func:`FrontendImpl::get_logger` or :cpp:func:`FrontendImpl::create_or_get_logger`.
-The latter will create a new logger if one does not already exist; otherwise, it returns the existing logger with the specified name.
+Loggers can be obtained using :cpp:func:`FrontendImpl::get_logger`, :cpp:func:`FrontendImpl::create_or_get_logger`, or :cpp:func:`FrontendImpl::create_logger`.
+
+- ``create_logger`` creates a new logger and throws ``QuillError`` if the name is already taken.
+- ``create_or_get_logger`` creates a new logger if one does not already exist; otherwise, it returns the existing logger with the specified name. Note that when a logger with the given name already exists, the provided sinks, pattern, clock source, and other configuration parameters are ignored — the existing logger is returned as-is.
+- ``get_logger`` retrieves an existing logger by name.
 
 .. code:: cpp
 
@@ -40,6 +45,10 @@ Logger Removal
 --------------
 
 Loggers can be removed using :cpp:func:`FrontendImpl::remove_logger` or :cpp:func:`FrontendImpl::remove_logger_blocking`. These functions remove the logger asynchronously. Once a logger is removed, it becomes invalid and must no longer be used by any other thread. The backend ensures that all pending log statements from the logger are processed before final removal. After removal, a logger with the same `logger_name` can be recreated with different parameters.
+
+``FrontendImpl::remove_logger_blocking`` should only be used while the backend worker is running
+after ``Backend::start()``, and must not be called from backend-thread callbacks because it waits
+for the backend worker to process the removal.
 
 If you plan to use logger removal functions, ensure that no other threads continue using the logger after calling :cpp:func:`remove_logger` or :cpp:func:`FrontendImpl::remove_logger_blocking`. To avoid potential issues, it is recommended to create a separate logger for each application thread, giving each logger a unique `logger_name`. This ensures that when one thread removes its logger, it does not affect other threads.
 
@@ -53,7 +62,7 @@ For example, if your server creates a logger for each connected TCP session and 
 
    While the logger removal functions (:cpp:func:`FrontendImpl::remove_logger` and :cpp:func:`FrontendImpl::remove_logger_blocking`) are thread-safe, **removing the same logger (`Logger*`) from multiple threads is not allowed**. Ensure that a single thread is responsible for removing a particular logger to avoid undefined behavior.
 
-.. literalinclude:: examples/quill_docs_example_loggers_remove.cpp
+.. literalinclude:: snippets/quill_docs_example_loggers_remove.cpp
    :language: cpp
    :linenos:
 
@@ -61,9 +70,22 @@ For example, if your server creates a logger for each connected TCP session and 
    :language: cpp
    :linenos:
 
+.. note::
+
+   In :cpp:class:`FileEventNotifier` callbacks, use ``quill::FileEventNotifierHandle`` for the file
+   handle parameter. On Windows this is a native ``HANDLE``. On other platforms it is a ``FILE*``.
+
+   ``before_write`` runs as part of normal log writing. ``before_open``, ``after_open``,
+   ``before_close``, and ``after_close`` run on whichever thread performs the file open/close
+   operation. Different callbacks, and different invocations of the same callback, may therefore
+   run on different threads over the sink lifetime. Callbacks must be thread-safe and must not
+   assume a single calling thread. When ``before_write`` changes the message size, size-based
+   rotation evaluates its threshold using the pre-transform size of the current message, so a
+   rotation can trigger up to one transformed message later or earlier than the exact limit.
+
 Simplifying Logger Usage for Single Root Logger Applications
 ------------------------------------------------------------
 
-For some applications the use of the single root logger might be enough. In that case passing the logger everytime
+For some applications the use of the single root logger might be enough. In that case, passing the logger every time
 to the macro becomes inconvenient. The solution is to store the created ``Logger`` as a static variable and create your
-own macros. See `example <https://github.com/odygrd/quill/blob/master/examples/recommended_usage/quill_wrapper/include/quill_wrapper/overwrite_macros.h>`_
+own macros. See `example <https://github.com/odygrd/quill/blob/master/examples/recommended_usage/quill_wrapper/include/quill_wrapper/overwrite_macros.h>`_.

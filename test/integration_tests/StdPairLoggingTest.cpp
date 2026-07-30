@@ -2,6 +2,7 @@
 
 #include "misc/TestUtilities.h"
 #include "quill/Backend.h"
+#include "quill/DeferredFormatCodec.h"
 #include "quill/Frontend.h"
 #include "quill/LogMacros.h"
 #include "quill/sinks/FileSink.h"
@@ -10,11 +11,45 @@
 
 #include <array>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
 
 using namespace quill;
+
+struct PairNoDefaultType
+{
+  explicit PairNoDefaultType(std::string value) : value(std::move(value)) {}
+
+  PairNoDefaultType(PairNoDefaultType const&) = default;
+  PairNoDefaultType& operator=(PairNoDefaultType const&) = default;
+  PairNoDefaultType(PairNoDefaultType&&) = default;
+  PairNoDefaultType& operator=(PairNoDefaultType&&) = default;
+
+  std::string value;
+};
+
+template <>
+struct fmtquill::formatter<PairNoDefaultType>
+{
+  template <typename FormatContext>
+  constexpr auto parse(FormatContext& ctx)
+  {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(::PairNoDefaultType const& pair_no_default_type, FormatContext& ctx) const
+  {
+    return fmtquill::format_to(ctx.out(), "PairNoDefault(value: {})", pair_no_default_type.value);
+  }
+};
+
+template <>
+struct quill::Codec<PairNoDefaultType> : quill::DeferredFormatCodec<PairNoDefaultType>
+{
+};
 
 /***/
 TEST_CASE("std_pair_logging")
@@ -66,6 +101,17 @@ TEST_CASE("std_pair_logging")
 
     // Test with temporary pair
     LOG_INFO(logger, "temp_pair {}", std::pair<int, std::string>{200, "twohundred"});
+
+    std::pair<int, PairNoDefaultType> no_default_pair{10, PairNoDefaultType{"no_default"}};
+    LOG_INFO(logger, "no_default_pair {}", no_default_pair);
+
+    LOG_INFO(logger, "temp_no_default_pair {}",
+             std::pair<int, PairNoDefaultType>{20, PairNoDefaultType{"temp_no_default"}});
+
+    // std::map's value_type is std::pair<Key const, T>; logging a dereferenced map iterator
+    // must compile and decode through the underlying element codecs
+    std::map<std::string, int> map_value{{"map_key", 42}};
+    LOG_INFO(logger, "map_value_type {}", *map_value.begin());
   }
 
   logger->flush_log();
@@ -100,6 +146,17 @@ TEST_CASE("std_pair_logging")
 
   REQUIRE(quill::testing::file_contains(
     file_contents, std::string{"LOG_INFO      " + logger_name + "       temp_pair (200, \"twohundred\")"}));
+
+  REQUIRE(quill::testing::file_contains(
+    file_contents, std::string{"LOG_INFO      " + logger_name + "       no_default_pair (10, PairNoDefault(value: no_default))"}));
+
+  REQUIRE(quill::testing::file_contains(
+    file_contents,
+    std::string{"LOG_INFO      " + logger_name +
+                "       temp_no_default_pair (20, PairNoDefault(value: temp_no_default))"}));
+
+  REQUIRE(quill::testing::file_contains(
+    file_contents, std::string{"LOG_INFO      " + logger_name + "       map_value_type (\"map_key\", 42)"}));
 
   testing::remove_file(filename);
 }

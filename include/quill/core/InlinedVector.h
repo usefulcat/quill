@@ -29,6 +29,8 @@
 
 QUILL_BEGIN_NAMESPACE
 
+QUILL_BEGIN_EXPORT
+
 namespace detail
 {
 
@@ -62,20 +64,45 @@ public:
   InlinedVector& operator=(InlinedVector const& other) = delete;
 
   /**
+   * Ensures storage for at least new_capacity elements without changing the size.
+   */
+  void reserve(size_t new_capacity)
+  {
+    if (new_capacity <= _capacity)
+    {
+      return;
+    }
+
+    auto* new_data = new value_type[new_capacity];
+
+    if (_capacity == N)
+    {
+      std::memcpy(new_data, _storage.inline_buffer, _size * sizeof(value_type));
+    }
+    else
+    {
+      std::memcpy(new_data, _storage.heap_buffer, _size * sizeof(value_type));
+      delete[] _storage.heap_buffer;
+    }
+
+    _storage.heap_buffer = new_data;
+    _capacity = new_capacity;
+  }
+
+  /**
    * Push back a new element
    */
   QUILL_ATTRIBUTE_HOT value_type push_back(value_type value)
   {
     if (_size == _capacity)
     {
+      if (QUILL_UNLIKELY(_capacity > (SIZE_MAX / 2)))
+      {
+        QUILL_THROW(QuillError{"InlinedVector capacity overflow"});
+      }
+
       size_t const new_capacity = _capacity * 2;
       auto* new_data = new value_type[new_capacity];
-
-      if (QUILL_UNLIKELY(new_capacity <= _capacity))
-      {
-        QUILL_THROW(
-          QuillError{"This unreachable code is here only to suppress gcc false positive warnings"});
-      }
 
       if (_capacity == N)
       {
@@ -171,6 +198,8 @@ using SizeCacheVector = InlinedVector<uint32_t, 12>;
 static_assert(sizeof(SizeCacheVector) <= QUILL_CACHE_LINE_SIZE,
               "SizeCacheVector should not exceed a cache line");
 } // namespace detail
+
+QUILL_END_EXPORT
 
 QUILL_END_NAMESPACE
 

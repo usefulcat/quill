@@ -1,6 +1,7 @@
 #include "doctest/doctest.h"
 
-#include "misc/TestUtilities.h"
+#include "misc/DocTestExtensions.h"
+#include "quill/LogMacros.h"
 #include "quill/core/Common.h"
 #include "quill/core/MacroMetadata.h"
 
@@ -21,7 +22,7 @@ TEST_CASE("construct")
 
     REQUIRE_STREQ(macro_metadata.message_format(), "Test fmt {}");
     REQUIRE_EQ(macro_metadata.log_level(), quill::LogLevel::Debug);
-    REQUIRE_STREQ(macro_metadata.line(), "15");
+    REQUIRE_STREQ(macro_metadata.line(), "16");
     REQUIRE_EQ(macro_metadata.has_named_args(), false);
   }
 
@@ -35,10 +36,10 @@ TEST_CASE("construct")
 
     REQUIRE_STREQ(macro_metadata.message_format(), "Test another fmt {name}");
     REQUIRE_EQ(macro_metadata.log_level(), quill::LogLevel::Info);
-    REQUIRE_STREQ(macro_metadata.line(), "29");
+    REQUIRE_STREQ(macro_metadata.line(), "30");
     REQUIRE_EQ(macro_metadata.file_name(), std::string_view{"MacroMetadataTest.cpp"});
-    REQUIRE_STREQ(macro_metadata.short_source_location(), "MacroMetadataTest.cpp:29");
-    REQUIRE_STREQ(macro_metadata.caller_function(), "DOCTEST_ANON_FUNC_3");
+    REQUIRE_STREQ(macro_metadata.short_source_location(), "MacroMetadataTest.cpp:30");
+    REQUIRE_STREQ(macro_metadata.caller_function(), __FUNCTION__);
     REQUIRE_EQ(macro_metadata.event(), MacroMetadata::Event::Flush);
     REQUIRE_EQ(macro_metadata.has_named_args(), true);
     REQUIRE_NE(std::string_view{macro_metadata.source_location()}.find("MacroMetadataTest.cpp"),
@@ -58,10 +59,10 @@ TEST_CASE("construct")
     REQUIRE_STREQ(macro_metadata.message_format(),
                   "Test another fmt {name} and {surname} and {{age}}");
     REQUIRE_EQ(macro_metadata.log_level(), quill::LogLevel::Info);
-    REQUIRE_STREQ(macro_metadata.line(), "51");
+    REQUIRE_STREQ(macro_metadata.line(), "52");
     REQUIRE_EQ(macro_metadata.file_name(), std::string_view{"MacroMetadataTest.cpp"});
-    REQUIRE_STREQ(macro_metadata.short_source_location(), "MacroMetadataTest.cpp:51");
-    REQUIRE_STREQ(macro_metadata.caller_function(), "DOCTEST_ANON_FUNC_3");
+    REQUIRE_STREQ(macro_metadata.short_source_location(), "MacroMetadataTest.cpp:52");
+    REQUIRE_STREQ(macro_metadata.caller_function(), __FUNCTION__);
     REQUIRE_EQ(macro_metadata.event(), MacroMetadata::Event::Flush);
     REQUIRE_EQ(macro_metadata.has_named_args(), true);
   }
@@ -76,10 +77,10 @@ TEST_CASE("construct")
 
     REQUIRE_STREQ(macro_metadata.message_format(), "Test another fmt {0} and {1} and {2}");
     REQUIRE_EQ(macro_metadata.log_level(), quill::LogLevel::Info);
-    REQUIRE_STREQ(macro_metadata.line(), "70");
+    REQUIRE_STREQ(macro_metadata.line(), "71");
     REQUIRE_EQ(macro_metadata.file_name(), std::string_view{"MacroMetadataTest.cpp"});
-    REQUIRE_STREQ(macro_metadata.short_source_location(), "MacroMetadataTest.cpp:70");
-    REQUIRE_STREQ(macro_metadata.caller_function(), "DOCTEST_ANON_FUNC_3");
+    REQUIRE_STREQ(macro_metadata.short_source_location(), "MacroMetadataTest.cpp:71");
+    REQUIRE_STREQ(macro_metadata.caller_function(), __FUNCTION__);
     REQUIRE_EQ(macro_metadata.event(), MacroMetadata::Event::Flush);
     REQUIRE_EQ(macro_metadata.has_named_args(), false);
   }
@@ -110,7 +111,7 @@ TEST_CASE("construct")
   {
     constexpr MacroMetadata macro_metadata{
       "MacroMetadataTest.cpp:51",                          // source_location
-      "DOCTEST_ANON_FUNC_3",                               // caller_function
+      "TestCallerFunction",                                // caller_function
       "Test another fmt {name} and {surname} and {{age}}", // message_format with named args {name} and {surname}
       nullptr,                                             // tags
       quill::LogLevel::Info,                               // log_level
@@ -124,7 +125,7 @@ TEST_CASE("construct")
     REQUIRE_EQ(macro_metadata.full_path(), std::string_view{"MacroMetadataTest.cpp"});
     REQUIRE_EQ(macro_metadata.file_name(), std::string_view{"MacroMetadataTest.cpp"});
     REQUIRE_STREQ(macro_metadata.short_source_location(), "MacroMetadataTest.cpp:51");
-    REQUIRE_STREQ(macro_metadata.caller_function(), "DOCTEST_ANON_FUNC_3");
+    REQUIRE_STREQ(macro_metadata.caller_function(), "TestCallerFunction");
     REQUIRE_EQ(macro_metadata.event(), MacroMetadata::Event::Flush);
     REQUIRE_EQ(macro_metadata.has_named_args(), true);
   }
@@ -195,6 +196,54 @@ TEST_CASE("construct")
     REQUIRE_EQ(macro_metadata.event(), MacroMetadata::Event::InitBacktrace);
     REQUIRE_EQ(macro_metadata.has_named_args(), false);
   }
+
+  {
+    constexpr MacroMetadata macro_metadata{
+      "metrics/Emitter.cpp:12",    "emit_metric", "", nullptr, quill::LogLevel::None,
+      MacroMetadata::Event::Metric};
+
+    REQUIRE_STREQ(macro_metadata.message_format(), "");
+    REQUIRE_EQ(macro_metadata.log_level(), quill::LogLevel::None);
+    REQUIRE_STREQ(macro_metadata.line(), "12");
+    REQUIRE_EQ(macro_metadata.file_name(), std::string_view{"Emitter.cpp"});
+    REQUIRE_STREQ(macro_metadata.short_source_location(), "Emitter.cpp:12");
+    REQUIRE_EQ(macro_metadata.event(), MacroMetadata::Event::Metric);
+    REQUIRE_EQ(macro_metadata.has_named_args(), false);
+  }
+}
+
+TEST_CASE("contains_named_args_accepts_fmt_identifier_start")
+{
+  static_assert(MacroMetadata::contains_named_args("{name}"),
+                "letter-start name should be detected");
+  static_assert(MacroMetadata::contains_named_args("{_name}"),
+                "underscore-start name should be detected");
+  static_assert(MacroMetadata::contains_named_args("{_name:.2f}"),
+                "underscore-start name with format spec should be detected");
+  static_assert(!MacroMetadata::contains_named_args("{}"), "positional placeholder is not named");
+  static_assert(!MacroMetadata::contains_named_args("{0}"), "indexed placeholder is not named");
+  static_assert(!MacroMetadata::contains_named_args("{{_name}}"),
+                "escaped braces should not be detected as named args");
+
+  constexpr MacroMetadata macro_metadata{
+    "MacroMetadataTest.cpp:250", "NamedArgsFunc",          "{_trace_id}", nullptr,
+    quill::LogLevel::Info,       MacroMetadata::Event::Log};
+
+  REQUIRE_EQ(macro_metadata.has_named_args(), true);
+}
+
+TEST_CASE("empty_source_location_is_handled")
+{
+  constexpr MacroMetadata macro_metadata{"",               // source_location
+                                         "NoFileInfoFunc", // caller_function
+                                         "Test fmt {}",    // message_format
+                                         nullptr,          // tags
+                                         quill::LogLevel::Info,
+                                         MacroMetadata::Event::Log};
+
+  REQUIRE_EQ(macro_metadata.full_path(), std::string_view{});
+  REQUIRE_EQ(macro_metadata.file_name(), std::string_view{});
+  REQUIRE_STREQ(macro_metadata.short_source_location(), "");
 }
 
 TEST_SUITE_END();

@@ -20,6 +20,8 @@ The macro-free approach comes with performance implications:
 
 4. **Backend Thread Impact**: Reduced throughput in the backend due to runtime metadata storage and processing
 
+5. **Additional Safety Checks**: The macro-free functions perform a runtime check for `nullptr` logger. This can be useful in cases where a user might forget to initialize a logger or intentionally wants logging calls to become no-ops when the logger is null. (Note that there are also multiple ways to achieve no-op logging with macros, e.g., by setting the log level to `None`)
+
 For performance-critical logging paths, the macro-based logging interface is recommended.
 
 Available Functions
@@ -39,6 +41,15 @@ The following logging functions are available in the macro-free mode:
 - ``quill::backtrace(logger, fmt, args...)`` - Backtrace level
 
 Each function also accepts a ``quill::Tags`` object as an optional parameter after the logger.
+
+Named placeholders (e.g., ``{name}`` instead of ``{}``) work the same way as with ``LOG_`` macros.
+See :ref:`Named Placeholders <logging_macros:Named Placeholders>` for details.
+
+.. note:: Rate-limited logging (``LOG_<LEVEL>_LIMIT`` and ``LOG_<LEVEL>_LIMIT_EVERY_N``) has no
+   macro-free equivalent and is out of scope for this mode. The limit macros maintain throttling
+   state per call site through ``static thread_local`` variables declared inside the macro
+   expansion; a function API has no call-site identity, so every call would share the same state.
+   Use the ``LOG_<LEVEL>_LIMIT`` macros when throttled logging is needed.
 
 Usage
 -----

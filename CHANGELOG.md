@@ -1,3 +1,5 @@
+- [v12.1.0](#v1210)
+- [v12.0.0](#v1200)
 - [v11.1.0](#v1110)
 - [v11.0.2](#v1102)
 - [v11.0.1](#v1101)
@@ -96,9 +98,134 @@
 - [v1.1.0](#v110)
 - [v1.0.0](#v100)
 
+- Added `SinkFlushReason` and `Sink::flush_sink(SinkFlushReason)` so custom sinks can opt in to
+  distinguishing periodic backend flushes, explicit `logger->flush_log()` flushes, and final
+  backend shutdown flushes.
+
+## v12.1.0
+
+- Updated bundled `libfmt` to `v12.2.0`.
+- Fixed append-mode `RotatingFileSink` recovery for base filenames without an extension, so `DateAndTime` rotated files
+  such as `application.20260622_120000` are counted towards `max_backup_files` instead of accumulating across
+  restarts. ([#938](https://github.com/odygrd/quill/discussions/938))
+- Fixed Windows builds that include `<windows.h>` before Quill wide-string logging headers. ([#941](https://github.com/odygrd/quill/issues/941))
+- Fixed size-based `RotatingFileSink` rotation after an externally deleted active file is reopened. ([#945](https://github.com/odygrd/quill/pull/945))
+- Fixed bounded queue writes after the reader drains the queue without crossing the reader-position publish batch. ([#946](https://github.com/odygrd/quill/pull/946))
+- Fixed `%s` timestamp formatting in `GmtTime` mode on non-UTC machines. ([#947](https://github.com/odygrd/quill/pull/947))
+- Fixed a huge page mapping leak on Linux where `munmap` failed with `EINVAL` on queue destruction. Allocations now
+  request `MAP_HUGE_2MB` explicitly and round the mapping size up to a 2 MiB multiple.
+- Fixed the transit event buffer expanding to twice the configured `transit_events_hard_limit`.
+- `Backend::start()` now throws on the caller thread when `transit_events_soft_limit` or `transit_events_hard_limit` is
+  misconfigured, instead of terminating the process from the backend thread.
+- Fixed `BackendTscClock` calls overlapping `Backend::stop()`. Backend restarts now reconfigure and republish one
+  stable clock allocation, so a conversion already in progress can safely finish without unbounded retained clocks.
+- Fixed potential queue corruption when logging `std::error_code` with locale-dependent or user-provided error
+  categories. The category name and message are now snapshotted once and reused for encoding.
+- Fixed `RotatingJsonFileSink` replaying a stale json payload after a failed size-based rotation.
+- Literal `{` and `}` in `format_pattern` are now escaped, while existing doubled-brace spelling remains compatible.
+  Invalid attribute format specifications are rejected during formatter construction.
+- `timestamp_pattern` now rejects the time-of-day-embedding modifiers `%c`, `%Ec`, `%EX`, `%OH`, `%OI`, `%OM` and
+  `%OS`, like `%X`, which silently froze at a cached value.
+- Fixed logging of `std::pair`, `std::tuple` and `std::array` with const-qualified element types, most notably
+  dereferenced `std::map` iterators (`std::pair<Key const, T>`), which previously failed to compile.
+- The backend singleton lock file is now opened with `O_CLOEXEC` and `O_NOFOLLOW`.
+- The `std::filesystem::path` codec now reads the path via `native()`, avoiding two temporary string allocations on
+  the hot path.
+- `Codec<std::tuple>` now fails with a clear `static_assert` when the decoded tuple is not formattable. A custom
+  formatter for the complete tuple remains supported even when elements have no standalone formatter.
+- `TransitEventBuffer` expansion now moves the existing events instead of default-constructing and discarding a
+  `FormatBuffer` allocation for every slot.
+- Fixed a C++ data race in `BackendTscClock` snapshot reads when resynchronization reused a slot concurrently.
+- Fixed SIGTERM and SIGINT handling when the backend is running without a valid logger.
+- Unbounded queue maximum capacities are now rounded up to the next power of two and validated against the initial capacity.
+- Sink exceptions no longer prevent later sinks from receiving the same log or metric event.
+- Logging macros now evaluate logger and runtime log-level expressions once per invocation.
+- CPU-affinity failures are now reported on macOS, FreeBSD, and NetBSD instead of being silently ignored.
+- Minutely and hourly rotation boundaries now stay wall-clock aligned after a late-triggered rotation, instead of
+  permanently drifting off the initial rotation time point.
+- Fixed a number of minor bugs and hardened edge cases across the frontend, backend, sinks and codecs, including
+  transactional startup rotation recovery and console colour handling around trailing newlines.
+- Clarified the custom-codec exception contract: sizing may throw before reservation, while encoding and decoding
+  must not.
+- Documented the `QUILL_LOG_LEVEL` environment variable. It is now validated during first logger creation; invalid
+  values (including `backtrace`) throw `QuillError`, do not register a partial logger, and can be retried.
+- `create_or_get_sink<TSink>()` now throws when a sink with the same name already exists with an incompatible type
+  (in builds with RTTI), instead of returning it for an undefined-behaviour cast.
+- Documented that `CsvWriter` writes fields verbatim and added an opt-in `quill::utility::csv_escape_field()`
+  helper for RFC 4180 escaping of fields containing commas, quotes or line breaks.
+- Backend callback logging no longer self-deadlocks when its own blocking queue is full; additional backend-thread records are dropped instead.
+- Exceptions from custom sink periodic tasks are now reported through `error_notifier` instead of terminating the process.
+- Concurrent `Backend::stop()` callers now wait for the in-progress shutdown to complete before returning.
+- Default JSON sinks now suffix named arguments that collide with built-in JSON fields, avoiding duplicate object keys.
+- Oversized runtime source paths are now truncated safely instead of overflowing metadata offsets.
+- Negative backend and file-sync intervals are now rejected during configuration.
+- Fixed Windows `std::filesystem::path` decoding when byte-packed arguments are not aligned for `wchar_t`.
+- Fixed rotating `CsvWriter` header writes on Windows after failed rotation recovery, so the header is appended instead
+  of overwriting the beginning of the active CSV file.
+
+## v12.0.0
+
+This release introduces asynchronous metrics, broadens codec coverage, and adds API and
+reliability improvements across backend lifecycle handling, sinks, and platform-specific paths.
+
+Quill can now offload both logs and metric samples through the same backend worker, with metric
+metadata registered up front and each publish call enqueueing only a compact, fixed-size sample
+record on the hot path.
+
+- Added asynchronous metrics support, including metric registration APIs, `Logger::publish_metric()`,
+  the `METRIC(...)` macro, and backend sink delivery through `Sink::write_metric()`.
+- Added an optional `PrometheusSink` and examples for both a custom metric sink and Prometheus-backed
+  export:
+  [custom metric sink example](https://github.com/odygrd/quill/blob/master/docs/snippets/quill_docs_example_metric_publishing.cpp),
+  [Prometheus sink example](https://github.com/odygrd/quill/blob/master/examples/metric_publishing_prometheus.cpp)
+- Added per-thread mapped diagnostic context (MDC) support with `Logger::set_mdc()`, `Logger::erase_mdc()`,
+  `Logger::clear_mdc()`, the `%(mdc)` pattern attribute, and `BackendOptions::mdc_format_pattern` for global MDC
+  rendering.
+- Added std codec support for `std::variant`, `std::bitset`, `std::complex`, and `std::error_code`.
+- Extended `quill/std/Chrono.h` codec support to match bundled fmt's C++20 calendar formatters,
+  including `std::chrono::year`, `month`, `day`, `weekday`, and `year_month_day` when available.
+- Added C++20 module support groundwork, including export markers and macro cleanup.
+- Switched to native file handles (`CreateFile`/`WriteFile`) on Windows for improved write throughput compared to
+  `FILE*`.
+- Added strict `Frontend::create_sink()` and `Frontend::create_logger()` APIs for callers that want
+  duplicate names to fail instead of reusing existing objects.
+- Added `CsvWriter::close()` for deterministic logger removal and file closure before backend shutdown.
+- Added `BackendOptions::ensure_monotonic_output_timestamps` to correct regular log and metric output timestamps that
+  would otherwise move backwards. Backtrace records keep their original capture timestamps.
+- `BackendOptions::cpu_affinity` now supports pinning the backend to multiple CPUs.
+- Added a fallback to `fs::absolute` when `fs::canonical` fails on RAM
+  disks. ([#910](https://github.com/odygrd/quill/issues/910))
+- Hardened backend, signal-handler, manual-backend, and teardown paths with more robust startup and shutdown behavior.
+- Fixed multiple codec, sink rotation, named-argument, queue, and platform-specific edge cases.
+- Fixed an infinite loop in the backend when the user-provided `error_notifier`
+  throws. ([#915](https://github.com/odygrd/quill/issues/915))
+- Generated a Doxygen tag file for downstream documentation
+  linking. ([#914](https://github.com/odygrd/quill/issues/914))
+- Fix rotating sink reopen failure when the disk is full ([#919](https://github.com/odygrd/quill/issues/919))
+- Fixes DLL unload on Windows, drain remaining log messages in stop() when backend thread was terminated
+  externally ([#925](https://github.com/odygrd/quill/discussions/925))
+- Fixed stale named arguments from a pooled `TransitEvent`. The `named_args` pointer is now consistently `nullptr` for
+  log statements without named arguments instead of occasionally being an empty
+  vector ([#926](https://github.com/odygrd/quill/issues/926))
+- `StopWatch` now samples its elapsed time on the frontend at the log call site instead of when the backend formats the
+  message, so logged values no longer include backend latency.
+- `RotatingFileSink` in append mode now counts rotated files left behind by previous runs towards `max_backup_files`
+  for all `RotationNamingScheme` values, removing the oldest files on startup when they exceed the limit instead of
+  letting them accumulate across restarts. Previously only the `Index` scheme (and the `Date` scheme for same-day
+  files) recovered existing files, so `Date` and `DateAndTime` files from earlier runs were never cleaned up. Recovered
+  append-mode files are not removed when `overwrite_rolled_files` is set to `false`.
+  ([#930](https://github.com/odygrd/quill/discussions/930))
+
 ## v11.1.0
 
 - Fixed thread-local context duplication across shared libraries ([#890](https://github.com/odygrd/quill/issues/890))
+- Added a `nullptr` check in macro-free log functions (`LogFunctions.h`) to allow calls with an uninitialized logger.
+  Macro-based logging remains deliberately unchanged ([#894](https://github.com/odygrd/quill/issues/894))
+- Suppress GCC false-positive warnings during LTO builds.
+- Added backend worker poll loop hooks `backend_worker_on_poll_begin`/
+  `backend_worker_on_poll_end` ([#897](https://github.com/odygrd/quill/issues/897))
+- Added opt-in sequential thread IDs via `QUILL_USE_SEQUENTIAL_THREAD_ID` with
+  `QUILL_DEFINE_SEQUENTIAL_THREAD_ID` ([#898](https://github.com/odygrd/quill/issues/898))
 
 ## v11.0.2
 
@@ -193,15 +320,17 @@
 - Minor improvements in `Utility::to_hex` function and `StringFromTime`
 - Fixed an issue where `BackendWorker::_exit` was always executed during destruction, even when the backend thread had
   already stopped ([#815](https://github.com/odygrd/quill/issues/815))
-- Fixed `RotatingFileSink` to correctly handle `FilenameAppendOption::StartDate` configuration ([#822](https://github.com/odygrd/quill/issues/822))
+- Fixed `RotatingFileSink` to correctly handle `FilenameAppendOption::StartDate`
+  configuration ([#822](https://github.com/odygrd/quill/issues/822))
 - Fixed unnecessary allocation caused by empty `std::vector` while `BackendWorker` is idle on
   Windows ([#827](https://github.com/odygrd/quill/issues/827))
 - Fixed `FileSink::open_mode` string comparison for file mode flags
 - Adjusted default `BackendOptions` values for broader system compatibility and typical usage patterns
-  
+
 ## v10.0.1
 
-- Fixed PatternFormatter test to work with any repository name instead of hardcoded `quill` ([#795](https://github.com/odygrd/quill/issues/795))
+- Fixed PatternFormatter test to work with any repository name instead of hardcoded
+  `quill` ([#795](https://github.com/odygrd/quill/issues/795))
 - Fixed Windows compiler warnings when clang-cl >= 19 is used
 
 ## v10.0.0
@@ -231,7 +360,7 @@
 - The immediate flush feature has been enhanced to support interval-based flushing and moved to runtime. This feature
   helps with debugging by ensuring log statements are flushed to the sink, blocking the caller
   thread. ([#660](https://github.com/odygrd/quill/issues/660))
-  
+
 - Added `source_location_path_strip_prefix` option in `PatternFormatterOptions` to customize the display of the
   `%(source_location)` attribute of `PatternFormatter`. When set, any paths that contain this prefix will have
   the prefix and everything before it stripped from the displayed path. For example, with prefix "projects",

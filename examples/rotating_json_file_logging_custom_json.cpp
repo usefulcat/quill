@@ -8,14 +8,15 @@
 #include <utility>
 
 #if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
-#pragma warning(push)
-#pragma warning(disable : 4996)
+  #pragma warning(push)
+  #pragma warning(disable : 4996)
 #endif
 
 /**
- * This example demonstrates how to create a RotatingJsonFileSink with daily rotation and automatic
- * rotation based on maximum file size, providing your own custom json formatting
- * For additional configuration options, refer to RotatingFileSinkConfig.
+ * This example shows a custom `RotatingJsonFileSink` that keeps the normal
+ * rotation behaviour but overrides how each JSON record is generated.
+ *
+ * See `RotatingFileSinkConfig` for additional rotation options.
  */
 
 class CustomJsonSink : public quill::RotatingJsonFileSink
@@ -96,5 +97,5 @@ int main()
 }
 
 #if defined(_WIN32) && defined(_MSC_VER) && !defined(__GNUC__)
-#pragma warning(pop)
+  #pragma warning(pop)
 #endif

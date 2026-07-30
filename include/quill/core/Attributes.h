@@ -10,7 +10,7 @@
   #define QUILL_BEGIN_NAMESPACE                                                                    \
     namespace quill                                                                                \
     {                                                                                              \
-    inline namespace v11                                                                           \
+    inline namespace v12                                                                           \
     {
   #define QUILL_END_NAMESPACE                                                                      \
     }                                                                                              \
@@ -84,14 +84,29 @@
  * Portable maybe_unused
  */
 #ifndef QUILL_MAYBE_UNUSED
-  #if QUILL_HAS_CPP_ATTRIBUTE(maybe_unused) && (__cplusplus >= 201703L)
+  // MSVC reports __cplusplus as 199711L unless /Zc:__cplusplus is passed; check _MSVC_LANG too
+  #if QUILL_HAS_CPP_ATTRIBUTE(maybe_unused) &&                                                     \
+    ((__cplusplus >= 201703L) || (defined(_MSVC_LANG) && (_MSVC_LANG >= 201703L)))
     #define QUILL_MAYBE_UNUSED [[maybe_unused]]
   #elif QUILL_HAS_ATTRIBUTE(__unused__)
     #define QUILL_MAYBE_UNUSED __attribute__((__unused__))
   #elif defined(_MSC_VER)
-    #define QUILL_MAYBE_UNUSED __pragma(warning(suppress : 4100))
+    #define QUILL_MAYBE_UNUSED __pragma(warning(suppress : 4100 4189))
   #else
     #define QUILL_MAYBE_UNUSED
+  #endif
+#endif
+
+/**
+ * Prevents the compiler from inlining a function
+ */
+#ifndef QUILL_NOINLINE
+  #if QUILL_HAS_ATTRIBUTE(noinline)
+    #define QUILL_NOINLINE __attribute__((noinline))
+  #elif defined(_MSC_VER)
+    #define QUILL_NOINLINE __declspec(noinline)
+  #else
+    #define QUILL_NOINLINE
   #endif
 #endif
 
@@ -131,6 +146,27 @@
 /**
  * Likely
  */
+/**
+ * Tells the compiler that a condition is always true, enabling optimisations
+ * that rely on that guarantee.  Behaviour is undefined if the condition is false.
+ */
+#ifndef QUILL_ASSUME
+  #if defined(__clang__)
+    #define QUILL_ASSUME(x) __builtin_assume(x)
+  #elif defined(__GNUC__)
+    #define QUILL_ASSUME(x)                                                                        \
+      do                                                                                           \
+      {                                                                                            \
+        if (!(x))                                                                                  \
+          __builtin_unreachable();                                                                 \
+      } while (0)
+  #elif defined(_MSC_VER)
+    #define QUILL_ASSUME(x) __assume(x)
+  #else
+    #define QUILL_ASSUME(x) ((void)0)
+  #endif
+#endif
+
 #ifndef QUILL_LIKELY
   #if defined(__GNUC__)
     #define QUILL_LIKELY(x) (__builtin_expect((x), 1))
@@ -168,6 +204,19 @@
 #endif
 
 /**
+ * Module export helpers
+ */
+#ifndef QUILL_BEGIN_EXPORT
+  #if defined(QUILL_MODULE)
+    #define QUILL_BEGIN_EXPORT export {
+    #define QUILL_END_EXPORT }
+  #else
+    #define QUILL_BEGIN_EXPORT
+    #define QUILL_END_EXPORT
+  #endif
+#endif
+
+/**
  * Check RTTI is available
  */
 #ifndef QUILL_USE_RTTI
@@ -178,4 +227,22 @@
   #else
     #define QUILL_USE_RTTI 0
   #endif
+#endif
+
+/**
+ * Thread-local storage specifier
+ */
+#if !defined(QUILL_THREAD_LOCAL)
+  #if defined(__GNUC__) && defined(__linux__)
+    #define QUILL_THREAD_LOCAL __thread
+  #else
+    #define QUILL_THREAD_LOCAL thread_local
+  #endif
+#endif
+
+/**
+ * Separator used by quill internals
+ */
+#if !defined(QUILL_MAGIC_SEPARATOR)
+  #define QUILL_MAGIC_SEPARATOR "\x01\x02\x03"
 #endif

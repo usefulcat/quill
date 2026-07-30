@@ -12,9 +12,20 @@
 
 using namespace quill;
 
+struct SmallBoundedBlockingFrontendOptions : quill::FrontendOptions
+{
+  static constexpr quill::QueueType queue_type = quill::QueueType::BoundedBlocking;
+  static constexpr size_t initial_queue_capacity = 4096;
+};
+
+using SmallBoundedBlockingFrontend = FrontendImpl<SmallBoundedBlockingFrontendOptions>;
+using SmallBoundedBlockingLogger = LoggerImpl<SmallBoundedBlockingFrontendOptions>;
+
 /***/
 TEST_CASE("remove_logger_blocking")
 {
+  Frontend::remove_logger_blocking(nullptr, 0);
+
   static constexpr size_t number_of_messages = 10;
   static constexpr char const* filename = "remove_logger_blocking.log";
   static std::string const logger_name = "logger";
@@ -52,7 +63,7 @@ TEST_CASE("remove_logger_blocking")
     }
 
     // Remove logger should also close the Sink and the file
-    Frontend::remove_logger_blocking(logger);
+    Frontend::remove_logger_blocking(logger, 0);
 
     // Read file and check
     std::vector<std::string> const file_contents = quill::testing::file_contents(filename);
