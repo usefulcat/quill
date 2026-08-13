@@ -1,3 +1,4 @@
+- [v12.2.0](#v1220)
 - [v12.1.0](#v1210)
 - [v12.0.0](#v1200)
 - [v11.1.0](#v1110)
@@ -98,9 +99,19 @@
 - [v1.1.0](#v110)
 - [v1.0.0](#v100)
 
+## v12.2.0
+
 - Added `SinkFlushReason` and `Sink::flush_sink(SinkFlushReason)` so custom sinks can opt in to
   distinguishing periodic backend flushes, explicit `logger->flush_log()` flushes, and final
   backend shutdown flushes.
+- Fixed the built-in signal handler suppressing core dumps for fatal signals. ([#962](https://github.com/odygrd/quill/issues/962))
+- Improve frontend codegen.
+- Added missing includes to quill module. ([#960](https://github.com/odygrd/quill/issues/960))
+- Fixed indexed placeholders and JSON messages in interval rate-limited logs.
+- Added overflow protection for backend duration settings and timestamp grace periods.
+- Repeated backend error notifications are now rate-limited.
+- Fixed duplicate flushes when multiple threads share a logger configured with
+  `set_immediate_flush(N)` where `N > 1`.
 
 ## v12.1.0
 
