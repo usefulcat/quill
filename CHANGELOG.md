@@ -1,3 +1,6 @@
+- [v13.0.0](#v1300)
+- [v12.2.2](#v1222)
+- [v12.2.1](#v1221)
 - [v12.2.0](#v1220)
 - [v12.1.0](#v1210)
 - [v12.0.0](#v1200)
@@ -99,6 +102,25 @@
 - [v1.1.0](#v110)
 - [v1.0.0](#v100)
 
+## v13.0.0
+
+- Added `quill::log()` to macro-free mode for logging with a runtime-selected log level.
+- Avoided allocating physical pages for unused bounded queue scratch space until it is needed.
+  (Related: [#979](https://github.com/odygrd/quill/issues/979))
+- Improvements to frontend throughput for macro-free logging and backend throughput
+  for filtering, structured logging, and reusable transit-event data.
+
+## v12.2.2
+
+- Fixed a benchmark build failure on x86 caused by a missing include.
+- Fixed inaccurate hot-path benchmark timing on AArch64.
+
+## v12.2.1
+
+- Fixed a frontend performance regression when logging variable-length arguments.
+- Updated hot-path benchmark timing and producer pacing for more consistent measurements.
+- Added Bazel 9 support by loading `cc_library` from `rules_cc` and updating the Bazel dependencies.
+
 ## v12.2.0
 
 - Added `SinkFlushReason` and `Sink::flush_sink(SinkFlushReason)` so custom sinks can opt in to
@@ -112,6 +134,9 @@
 - Repeated backend error notifications are now rate-limited.
 - Fixed duplicate flushes when multiple threads share a logger configured with
   `set_immediate_flush(N)` where `N > 1`.
+- Removed the `QUILL_X86ARCH` build option along with the x86 cache-line flush and prefetch code it
+  enabled. Benchmarks on Intel and AMD systems across several thread-pinning topologies showed the
+  option consistently increased producer-side latency with no measurable benefit.
 
 ## v12.1.0
 

@@ -33,6 +33,7 @@ int main()
   backend_options.sleep_duration = std::chrono::nanoseconds{0};
   backend_options.transit_events_hard_limit = 1;
   backend_options.transit_events_soft_limit = 1;
+  backend_options.transit_event_buffer_initial_capacity = 1;
   backend_options.log_timestamp_ordering_grace_period = std::chrono::microseconds{1};
 
   // Start the logging backend thread and give it some tiem to init

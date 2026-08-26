@@ -19,9 +19,16 @@
 #include <cstdint>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <thread>
+
+#if defined(__x86_64__) || defined(_M_X64)
+  // _mm_lfence. Include explicitly; newer toolchains (e.g. gcc 16) no longer pull
+  // emmintrin.h in transitively through the other headers above
+  #include <emmintrin.h>
+#endif
 
 // Pinning can legitimately fail (e.g. Apple Silicon does not support the affinity policy);
 // warn and continue instead of terminating the benchmark
@@ -53,13 +60,16 @@ inline uint16_t get_cpu_to_pin_thread(uint16_t thread_num)
 }
 
 // Instead of sleep
-inline void wait([[maybe_unused]] std::chrono::nanoseconds min, std::chrono::nanoseconds max)
+inline void wait([[maybe_unused]] std::chrono::nanoseconds min, std::chrono::nanoseconds max,
+                 [[maybe_unused]] size_t stream_id)
 {
 #ifdef PERF_ENABLED
   // when in perf use sleep as the other variables add noise
   std::this_thread::sleep_for(max);
 #else
-  thread_local std::mt19937 gen{std::random_device{}()};
+  // Use a separate, repeatable sequence per producer so repeated runs get the
+  // same pacing without artificially synchronizing all producer threads.
+  thread_local std::mt19937 gen{static_cast<std::mt19937::result_type>(0x51ee'50a7u + stream_id)};
   std::uniform_int_distribution<int64_t> dis(min.count(), max.count());
 
   auto const start_time = std::chrono::steady_clock::now();
@@ -69,6 +79,26 @@ inline void wait([[maybe_unused]] std::chrono::nanoseconds min, std::chrono::nan
   {
     time_now = std::chrono::steady_clock::now().time_since_epoch();
   } while (time_now < end_time.time_since_epoch());
+#endif
+}
+
+// Neither RDTSC on x86-64 nor CNTVCT_EL0 on AArch64 is a serializing read. Fence
+// both sides so the measured logging calls cannot move into or out of the timed
+// region. Other targets, including 32-bit x86 where SSE2 is not guaranteed, use
+// quill::detail::rdtsc() unfenced.
+inline uint64_t serialized_benchmark_clock() noexcept
+{
+#if defined(__x86_64__) || defined(_M_X64)
+  _mm_lfence();
+  uint64_t const timestamp = quill::detail::rdtsc();
+  _mm_lfence();
+  return timestamp;
+#elif defined(__aarch64__)
+  uint64_t timestamp;
+  __asm__ volatile("isb\n\tmrs %0, cntvct_el0\n\tisb" : "=r"(timestamp) : : "memory");
+  return timestamp;
+#else
+  return quill::detail::rdtsc();
 #endif
 }
 
@@ -124,7 +154,7 @@ inline void run_log_benchmark(size_t num_iterations, size_t messages_per_iterati
     }
 
     // send the next batch of messages after x time
-    wait(MIN_WAIT_DURATION, MAX_WAIT_DURATION);
+    wait(MIN_WAIT_DURATION, MAX_WAIT_DURATION, current_thread_num);
   }
 
   on_thread_exit();
@@ -156,19 +186,19 @@ inline void run_log_benchmark(size_t num_iterations, size_t messages_per_iterati
   {
     double const d = static_cast<double>(iteration) + (0.1 * static_cast<double>(iteration));
 
-    auto const start = quill::detail::rdtsc();
+    auto const start = serialized_benchmark_clock();
     for (size_t i = 0; i < messages_per_iteration; ++i)
     {
       log_func(iteration, i, d);
     }
-    auto const end = quill::detail::rdtsc();
+    auto const end = serialized_benchmark_clock();
 
     uint64_t const latency{static_cast<uint64_t>(
       static_cast<double>((end - start)) / static_cast<double>(messages_per_iteration) * rdtsc_ns_per_tick)};
     latencies.push_back(latency);
 
     // send the next batch of messages after x time
-    wait(MIN_WAIT_DURATION, MAX_WAIT_DURATION);
+    wait(MIN_WAIT_DURATION, MAX_WAIT_DURATION, current_thread_num);
   }
 
   on_thread_exit();
@@ -197,6 +227,43 @@ inline void run_benchmark([[maybe_unused]] char const* benchmark_name, uint16_t 
   std::cout << "running for " << thread_count << " thread(s)" << std::endl;
 
   quill::detail::RdtscClock rdtsc_clock{std::chrono::minutes{30}};
+
+  // Detect coarse clock resolution before running the benchmark.
+  double const clock_ns_per_tick = rdtsc_clock.nanoseconds_per_tick();
+  double effective_resolution_ns = clock_ns_per_tick;
+  {
+    uint64_t min_step = (std::numeric_limits<uint64_t>::max)();
+    size_t repeated_reads = 0;
+    constexpr size_t clock_samples = 1000;
+    uint64_t prev_tsc = quill::detail::rdtsc();
+    for (size_t i = 0; i < clock_samples; ++i)
+    {
+      uint64_t const cur_tsc = quill::detail::rdtsc();
+      if (cur_tsc == prev_tsc)
+      {
+        ++repeated_reads;
+      }
+      else
+      {
+        min_step = (std::min)(min_step, cur_tsc - prev_tsc);
+        prev_tsc = cur_tsc;
+      }
+    }
+    if ((repeated_reads > (clock_samples / 2)) && (min_step != (std::numeric_limits<uint64_t>::max)()))
+    {
+      effective_resolution_ns = static_cast<double>(min_step) * clock_ns_per_tick;
+    }
+  }
+
+  size_t const batch_size = messages_for_thread(messages_per_iteration, thread_count, 0);
+  if ((effective_resolution_ns > 1.5) && (batch_size != 0))
+  {
+    std::cout << "Warning: the benchmark clock on this system has an observed minimum step of "
+              << effective_resolution_ns << " ns. With batches of " << batch_size
+              << " messages, this limits the approximate per-message clock granularity to "
+              << effective_resolution_ns / static_cast<double>(batch_size)
+              << " ns before integer-nanosecond rounding" << std::endl;
+  }
 
   // each thread gets a vector of latencies
   std::vector<std::vector<uint64_t>> latencies;
