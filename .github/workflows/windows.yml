@@ -26,7 +26,7 @@ jobs:
     # windows-2016 and windows-2019 have MSVC 2017 and 2019 installed
     # respectively: https://github.com/actions/virtual-environments.
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       matrix:
         os: [ windows-2022 ]
@@ -55,11 +55,11 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Create Build Environment
-        run: cmake -E make_directory ${{runner.workspace}}/build
+        run: cmake -E make_directory ${{github.workspace}}/../build
 
       - name: Configure
         shell: bash         # Use a bash shell for $GITHUB_WORKSPACE.
-        working-directory: ${{runner.workspace}}/build
+        working-directory: ${{github.workspace}}/../build
         run: |
           cmake -DCMAKE_BUILD_TYPE=${{matrix.build_type}} ${{matrix.cmake_options}} \
               -DQUILL_BUILD_BENCHMARKS=${{ matrix.build_type == 'Release' && matrix.with_tests != 'OFF' && 'ON' || 'OFF' }} \
@@ -67,20 +67,57 @@ jobs:
               -DQUILL_BUILD_EXAMPLES=ON -DQUILL_VERBOSE_MAKEFILE=ON $GITHUB_WORKSPACE
 
       - name: Build
-        working-directory: ${{runner.workspace}}/build
+        working-directory: ${{github.workspace}}/../build
         run: |
           $threads = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
           cmake --build . --config ${{matrix.build_type}} --parallel $threads
 
       - name: Test
-        working-directory: ${{runner.workspace}}/build
+        working-directory: ${{github.workspace}}/../build
         run: |
           $threads = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
           ctest --build-config ${{matrix.build_type}} --parallel $threads --output-on-failure
 
+  msvc-module:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+        no_exceptions: ['OFF', 'ON']
+        import_std: ['OFF', 'ON']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install CMake with standard library module support
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '4.5.0'
+      - name: Configure the module examples
+        run: >-
+          cmake -S . -B build-module -G Ninja
+          -DCMAKE_CXX_COMPILER=cl
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_CXX_STANDARD=${{ matrix.import_std == 'ON' && '23' || '20' }}
+          -DCMAKE_CXX_FLAGS_INIT=/we5244
+          -DQUILL_BUILD_MODULE=ON -DQUILL_IMPORT_STD=${{ matrix.import_std }}
+          -DQUILL_NO_EXCEPTIONS=${{ matrix.no_exceptions }}
+          -DQUILL_BUILD_TESTS=ON -DQUILL_BUILD_EXAMPLES=ON
+      - name: Build the module examples
+        run: >-
+          cmake --build build-module --target quill_docs_module
+          quill_example_console_logging_module --parallel 2
+      - name: Test logging and automatic shutdown
+        run: >-
+          ctest --test-dir build-module -R '^quill_module_(logging|shutdown)_test$'
+          --output-on-failure --timeout 30
+
   mingw:
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 90
     defaults:
       run:
         shell: msys2 {0}

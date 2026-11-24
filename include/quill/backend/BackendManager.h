@@ -10,11 +10,12 @@
 #include "quill/backend/BackendWorker.h"
 #include "quill/backend/ManualBackendWorker.h"
 #include "quill/core/Attributes.h"
-#include "quill/core/Spinlock.h"
 
-#include <atomic>
-#include <cstdint>
-#include <mutex>
+#ifndef QUILL_MODULE
+  #include <atomic>
+  #include <cstdint>
+  #include <mutex>
+#endif
 
 QUILL_BEGIN_NAMESPACE
 
@@ -44,7 +45,7 @@ class BackendManager
 {
 public:
   /***/
-  QUILL_EXPORT static BackendManager& instance() noexcept
+  QUILL_EXPORT static inline BackendManager& instance() noexcept
   {
     static BackendManager instance;
     return instance;
@@ -120,10 +121,13 @@ private:
   void set_atexit_registered() noexcept { _atexit_registered.store(true); }
 
 private:
-  Spinlock _stop_spinlock;
+  // A std::mutex rather than the Spinlock used elsewhere: stop() holds it while joining the backend
+  // thread, through the whole drain and final flush, so a concurrent caller should sleep instead of
+  // spinning. Spinlock exists so the frontend headers avoid <mutex>; the backend already uses it.
+  std::mutex _stop_mutex;
   BackendWorker _backend_worker;
   ManualBackendWorker _manual_backend_worker{&_backend_worker};
-  std::atomic<std::once_flag*> _start_once_flag{new std::once_flag};
+  std::atomic<std::once_flag*> _start_once_flag{new std::once_flag{}};
   std::atomic<bool> _atexit_registered{false};
 };
 

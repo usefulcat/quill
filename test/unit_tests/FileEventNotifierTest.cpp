@@ -77,8 +77,19 @@ TEST_CASE("file_event_notifier_nullptr")
 
   {
     FileSink fs{file, FileSinkConfig{}, file_event_notifier};
-    fs.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                 std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", "test");
+    fs.write_log(LogRecord{nullptr,
+                           0,
+                           std::string_view{},
+                           std::string_view{},
+                           std::string{},
+                           std::string_view{},
+                           LogLevel::Info,
+                           "INFO",
+                           "I",
+                           nullptr,
+                           "",
+                           "test",
+                           {}});
   }
 
   // Read file and check
@@ -140,8 +151,19 @@ TEST_CASE("file_event_notifier")
     REQUIRE_EQ(after_close_cnt, 0);
     REQUIRE_EQ(before_write_cnt, 0);
 
-    fs.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                 std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", output_msg);
+    fs.write_log(LogRecord{nullptr,
+                           0,
+                           std::string_view{},
+                           std::string_view{},
+                           std::string{},
+                           std::string_view{},
+                           LogLevel::Info,
+                           "INFO",
+                           "I",
+                           nullptr,
+                           "",
+                           output_msg,
+                           {}});
 
     REQUIRE_EQ(before_open_cnt, 1);
     REQUIRE_EQ(after_open_cnt, 1);
@@ -159,6 +181,50 @@ TEST_CASE("file_event_notifier")
   std::vector<std::string> const file_contents = quill::testing::file_contents(file);
   REQUIRE(quill::testing::file_contains(file_contents, output_msg));
   testing::remove_file(file);
+}
+
+TEST_CASE("file_event_notifier_write_order")
+{
+  auto write_text = [](FileEventNotifierHandle handle, std::string_view text)
+  {
+#if defined(_WIN32)
+    DWORD written{0};
+    REQUIRE(::WriteFile(handle, text.data(), static_cast<DWORD>(text.size()), &written, nullptr));
+    REQUIRE_EQ(written, text.size());
+#else
+    REQUIRE_EQ(std::fwrite(text.data(), 1, text.size(), handle), text.size());
+#endif
+  };
+
+  for (char const mode : {'w', 'a'})
+  {
+    fs::path const filename = std::string{"file_event_notifier_write_order_"} + mode + ".log";
+    testing::create_file(filename, "existing\n");
+    FileSinkConfig config;
+    config.set_open_mode(mode);
+    FileEventNotifier notifier;
+    notifier.after_open = [write_text](fs::path const&, FileEventNotifierHandle handle)
+    { write_text(handle, "header\n"); };
+    notifier.before_close = [write_text](fs::path const&, FileEventNotifierHandle handle)
+    { write_text(handle, "footer\n"); };
+    {
+      FileSink sink{filename, config, notifier};
+      sink.write_log(LogRecord{
+        nullptr, 0, {}, {}, {}, {}, LogLevel::Info, "INFO", "I", nullptr, "", "body\n", {}});
+    }
+
+    auto const contents = testing::file_contents(filename);
+    size_t const offset = mode == 'a' ? 1u : 0u;
+    REQUIRE_EQ(contents.size(), offset + 3u);
+    if (offset != 0)
+    {
+      CHECK_EQ(contents[0], "existing");
+    }
+    CHECK_EQ(contents[offset], "header");
+    CHECK_EQ(contents[offset + 1], "body");
+    CHECK_EQ(contents[offset + 2], "footer");
+    testing::remove_file(filename);
+  }
 }
 
 TEST_SUITE_END();

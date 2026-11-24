@@ -10,12 +10,48 @@ ConsoleSink
 
 The `ConsoleSink` class sends logging output to streams `stdout` or `stderr`. Printing color codes to terminal or Windows console is also supported.
 
+On Windows, the console interprets bytes written by ``ConsoleSink`` using its output code page.
+To display UTF-8 logs, set the console output code page to UTF-8 with ``SetConsoleOutputCP(CP_UTF8)``
+and disable or customize :cpp:member:`BackendOptions::check_printable_char` to preserve UTF-8 bytes.
+When output is redirected to a pipe or file, the sink writes the original bytes.
+
 FileSink
 ~~~~~~~~
 
 The :cpp:class:`FileSink` is a straightforward sink that outputs to a file. The filepath of the `FileSink` serves as a unique identifier, allowing you to retrieve the same sink later using :cpp:func:`FrontendImpl::get_sink`.
 
 Each file can only have a single instance of `FileSink`.
+
+``FileSinkConfig::set_file_header()`` sets bytes that start every file of the sink, e.g. the header
+row of a csv file. They are written when the sink opens an empty file, which includes each file
+that a ``RotatingFileSink`` rotates to; a file that is appended to and already has content gets no
+second header. ``FileEventNotifier::after_open`` is called before the header is written, with the
+file as it was opened.
+
+The sink copies each record to a write buffer of its own and writes the buffer to the file when it
+is full and when the backend flushes the sink. ``FileSinkConfig::set_write_buffer_size()`` sets the
+size of the buffer, which is 64 KiB by default and 256 KiB on Windows. The handle that
+``FileEventNotifier::after_open`` and ``FileEventNotifier::before_close`` receive is not part of
+this: what a callback writes through it stays in order with the records, but configuring it, e.g.
+with ``setvbuf``, does not change how the records are buffered.
+
+When a write to the file fails, e.g. on a full disk, the sink keeps what is in its buffer and
+writes it once a later write succeeds; what it cannot keep is lost, so a file can end with a part
+of a record.
+
+``FileSinkConfig::set_write_buffer_size(0)`` turns the buffer of the sink off. Every record
+is then written through that handle as it arrives, so the callbacks decide how the file is
+buffered and can keep the handle. On Windows each record is written to the file at once; on other
+platforms the handle is a ``FILE*`` with the default buffering of the C library, until
+``after_open`` changes it with ``setvbuf``. This is slower than the buffer of the sink.
+
+On Windows, a ``std::string`` file name is decoded with the active code page. For a path with
+characters outside it, pass a ``std::filesystem::path`` built from a wide string instead:
+
+.. code-block:: cpp
+
+    auto file_sink = quill::Frontend::create_or_get_sink<quill::FileSink>(
+      std::filesystem::path{L"C:\\logs\\\u65e5\u8a8c.log"}, quill::FileSinkConfig{});
 
 .. note::
 
@@ -90,6 +126,47 @@ StreamSink
 The :cpp:class:`StreamSink` is a base sink class used to write log messages to C-style ``FILE*`` streams, such as 
 ``stdout``, ``stderr``, or files opened with ``fopen``.
 It is typically used as a foundation for higher-level sinks like :cpp:class:`ConsoleSink`.
+
+To wrap an application-owned stream with ``StreamSink``, open it with ``fopen()`` or,
+on POSIX, ``fdopen()`` and pass the resulting ``FILE*`` to the sink constructor.
+``StreamSink`` does not open the supplied filename or close the stream. The application
+must keep the ``FILE*`` alive until the backend has finished using it.
+
+The ``stream_is_unbuffered`` constructor flag is an opt-in for the specific case of an
+application-owned, unbuffered stream, such as a pipe writer. It enables retries when a write
+is interrupted by a signal. Leave it ``false`` for buffered streams; the flag itself does
+not change the stream's buffering mode.
+
+To opt in, call ``setvbuf(stream, nullptr, _IONBF, 0)`` immediately after opening the stream,
+before any reads, writes, or logging. Check that it succeeds, then pass the configured
+``FILE*`` and ``stream_is_unbuffered=true`` when creating the ``StreamSink``. Keep buffering
+disabled for the sink's lifetime.
+
+This complete example uses a regular file so it can run on all supported platforms. The
+same setup sequence applies to a POSIX pipe stream opened with ``fdopen()``:
+
+.. literalinclude:: snippets/quill_docs_example_unbuffered_stream.cpp
+   :language: cpp
+   :linenos:
+
+.. note::
+
+   This opt-in is for direct ``StreamSink`` construction. ``FileSink`` and ``ConsoleSink``
+   do not expose it. On POSIX, ``FileSink`` passes its internally opened ``FILE*`` to
+   ``FileEventNotifier::after_open``, but changing buffering in that callback does not
+   enable the retry flag.
+
+   ``FileSink`` uses a write buffer of 64 KiB by default, and of 256 KiB on Windows.
+   ``FileSinkConfig::set_write_buffer_size(0)`` disables that buffer, so that the records go
+   through the ``FILE*``; it does not make the stream unbuffered.
+
+Buffered short writes retain the existing error reporting. This feature does not provide
+lossless recovery for buffered streams: some C libraries discard pending buffered data on
+a write error, and retrying ``fwrite()`` cannot reliably recover the discarded bytes.
+
+Direct callers of the static write helper can use ``StreamSink::safe_fwrite_unbuffered()``
+after the same checked ``_IONBF`` setup. ``StreamSink::safe_fwrite()`` retains the default
+short-write error handling.
 
 AndroidSink
 ~~~~~~~~~~~

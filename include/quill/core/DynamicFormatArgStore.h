@@ -6,11 +6,13 @@
 
 #pragma once
 
-#include <memory>
-#include <string>
-#include <string_view>
-#include <type_traits>
-#include <vector>
+#ifndef QUILL_MODULE
+  #include <memory>
+  #include <string>
+  #include <string_view>
+  #include <type_traits>
+  #include <vector>
+#endif
 
 #include "quill/bundled/fmt/base.h"
 #include "quill/core/Attributes.h"
@@ -59,7 +61,7 @@ class DynamicArgList
 
 public:
   template <typename T, typename Arg>
-  T const& push(Arg&& arg)
+  T& push(Arg&& arg)
   {
     auto new_node = std::unique_ptr<TypedNode<T>>(new TypedNode<T>(static_cast<Arg&&>(arg)));
     T& value = new_node->value;
@@ -86,6 +88,7 @@ private:
   // without relocation because items in data_ refer to it.
   detail::DynamicArgList _dynamic_arg_list;
   bool _has_string_related_type{false};
+  bool _has_custom_type{false};
 
   template <typename T>
   void emplace_arg(T&& arg)
@@ -108,11 +111,12 @@ public:
 
     **Example**::
 
-      fmtquill::dynamic_format_arg_store<fmtquill::format_fmtquill::format_context> store;
+      quill::DynamicFormatArgStore store;
       store.push_back(42);
       store.push_back("abc");
       store.push_back(1.5f);
-      std::string result = fmtquill::vformat("{} and {} and {}", store);
+      std::string result = fmtquill::vformat(
+        "{} and {} and {}", fmtquill::basic_format_args<fmtquill::format_context>{store.data(), store.size()});
   */
   template <typename T>
   void push_back(T&& arg)
@@ -120,8 +124,13 @@ public:
     using char_type = typename fmtquill::format_context::char_type;
     using bare_type = std::remove_cv_t<std::remove_reference_t<T>>;
     constexpr auto mapped_type = fmtquill::detail::mapped_type_constant<bare_type, char_type>::value;
-    using stored_type =
-      std::conditional_t<std::is_convertible_v<bare_type, std::string>, std::string, bare_type>;
+    // A type with its own formatter is stored as itself even when it also converts to std::string,
+    // otherwise the conversion would replace the user formatter (or throw, e.g. nlohmann::json).
+    // A type without a formatter is still formatted through its conversion to std::string
+    constexpr bool has_user_formatter = (mapped_type == fmtquill::detail::type::custom_type) &&
+      fmtquill::is_formattable<bare_type, char_type>::value;
+    constexpr bool store_as_std_string = !has_user_formatter && std::is_convertible_v<bare_type, std::string>;
+    using stored_type = std::conditional_t<store_as_std_string, std::string, bare_type>;
 
     if constexpr (!(std::is_same_v<bare_type, std::string_view> || std::is_same_v<bare_type, fmtquill::string_view> ||
                     (mapped_type != fmtquill::detail::type::cstring_type &&
@@ -143,6 +152,11 @@ public:
     {
       _has_string_related_type = true;
     }
+
+    if constexpr (has_user_formatter)
+    {
+      _has_custom_type = true;
+    }
   }
 
   /** Erase all elements from the store */
@@ -151,9 +165,17 @@ public:
     _data.clear();
     _dynamic_arg_list = detail::DynamicArgList{};
     _has_string_related_type = false;
+    _has_custom_type = false;
   }
 
   QUILL_NODISCARD bool has_string_related_type() const noexcept { return _has_string_related_type; }
+
+  /**
+   * @return true if an argument is formatted by a fmtquill::formatter specialization. Unlike the
+   * formatting of a built-in type, it can depend on the other arguments, which the formatter
+   * reads through its format context.
+   */
+  QUILL_NODISCARD bool has_custom_type() const noexcept { return _has_custom_type; }
 };
 
 QUILL_END_EXPORT

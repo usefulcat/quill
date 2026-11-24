@@ -12,12 +12,14 @@
 #include "quill/core/DynamicFormatArgStore.h"
 #include "quill/core/InlinedVector.h"
 
-#include <cstddef>
-#include <cstdint>
-#include <cstring>
-#include <string>
-#include <string_view>
-#include <type_traits>
+#ifndef QUILL_MODULE
+  #include <cstddef>
+  #include <cstdint>
+  #include <cstring>
+  #include <string>
+  #include <string_view>
+  #include <type_traits>
+#endif
 
 QUILL_BEGIN_NAMESPACE
 
@@ -130,6 +132,40 @@ QUILL_NODISCARD QUILL_ATTRIBUTE_HOT inline uint32_t clamp_encoded_string_length(
   constexpr uint32_t max_val = UINT32_MAX - 1u;
   return (len > max_val) ? max_val : static_cast<uint32_t>(len);
 }
+
+/**
+ * Stores a string snapshot in the size cache: its length followed by its bytes.
+ * For values that must be formatted or read exactly once, during sizing, and copied unchanged
+ * by encode_cached_string().
+ * @return the encoded size, the length field included
+ */
+inline size_t cache_string(SizeCacheVector& conditional_arg_size_cache, std::string_view str)
+{
+  uint32_t const len = clamp_encoded_string_length(str.size());
+  conditional_arg_size_cache.push_back(len);
+  conditional_arg_size_cache.append_bytes(str.data(), len);
+  return sizeof(uint32_t) + len;
+}
+
+/**
+ * Encodes a string stored by cache_string() in the same layout as Codec<std::string>.
+ */
+inline void encode_cached_string(std::byte*& buffer, SizeCacheVector const& conditional_arg_size_cache,
+                                 uint32_t& conditional_arg_size_cache_index)
+{
+  uint32_t const len = conditional_arg_size_cache[conditional_arg_size_cache_index++];
+  std::memcpy(buffer, &len, sizeof(len));
+  buffer += sizeof(len);
+
+  if (len != 0)
+  {
+    std::memcpy(buffer, conditional_arg_size_cache.data() + conditional_arg_size_cache_index, len);
+  }
+
+  buffer += len;
+  conditional_arg_size_cache_index += static_cast<uint32_t>((len + sizeof(uint32_t) - 1u) / sizeof(uint32_t));
+}
+
 /** std string detection, ignoring the Allocator type **/
 template <typename T>
 struct is_std_string : std::false_type
@@ -139,6 +175,18 @@ struct is_std_string : std::false_type
 template <typename Allocator>
 struct is_std_string<std::basic_string<char, std::char_traits<char>, Allocator>> : std::true_type
 {
+};
+
+/**
+ * Two buffers that are encoded as the bytes of one string, the second after the first, e.g. the
+ * header of a binary record and its data. See Logger::log_binary()
+ */
+struct BinaryBuffers
+{
+  void const* first;
+  void const* second;
+  uint32_t first_size;
+  uint32_t second_size;
 };
 } // namespace detail
 
@@ -153,9 +201,9 @@ QUILL_BEGIN_EXPORT
  *   - decode_arg() and decode_and_store_arg() must consume their payload without throwing. Queue
  *     records have no byte length, so the backend cannot skip a decoder-poisoned record.
  *
- * DeferredFormatCodec therefore requires non-throwing selected constructors/destructors, and
- * DirectFormatCodec requires a non-throwing formatter. Custom decoders should catch recoverable
- * errors and store a fallback value when possible.
+ * DeferredFormatCodec therefore requires non-throwing selected constructors/destructors.
+ * DirectFormatCodec formats while computing the size, so its formatter may throw. Custom decoders
+ * should catch recoverable errors and store a fallback value when possible.
  */
 
 /** typename = void for specializations with enable_if **/
@@ -163,8 +211,8 @@ template <typename Arg, typename = void>
 struct Codec
 {
   /***/
-  QUILL_NODISCARD QUILL_ATTRIBUTE_HOT static size_t compute_encoded_size(
-    QUILL_MAYBE_UNUSED detail::SizeCacheVector& conditional_arg_size_cache, QUILL_MAYBE_UNUSED Arg const& arg) noexcept
+  QUILL_NODISCARD QUILL_ATTRIBUTE_HOT static size_t compute_encoded_size(QUILL_MAYBE_UNUSED SizeCacheVector& conditional_arg_size_cache,
+                                                                         QUILL_MAYBE_UNUSED Arg const& arg)
   {
     if constexpr (std::disjunction_v<std::is_arithmetic<Arg>, std::is_enum<Arg>,
                                      std::is_same<Arg, void const*>, std::is_same<Arg, void*>>)
@@ -201,7 +249,7 @@ struct Codec
 
   /***/
   QUILL_ATTRIBUTE_HOT static void encode(std::byte*& buffer,
-                                         QUILL_MAYBE_UNUSED detail::SizeCacheVector const& conditional_arg_size_cache,
+                                         QUILL_MAYBE_UNUSED SizeCacheVector const& conditional_arg_size_cache,
                                          QUILL_MAYBE_UNUSED uint32_t& conditional_arg_size_cache_index,
                                          Arg const& arg) noexcept
   {
@@ -331,18 +379,14 @@ struct Codec
       // c strings or char array
       char const* arg = decode_arg(buffer);
 
-      // pass the string_view to args_store to avoid the dynamic allocation
-      // we pass fmtquill::string_view since fmt/base.h includes a formatter for that type.
-      // for std::string_view we would need fmt/format.h
+      // Store a view of the decoded bytes instead of copying them into an owned string
       args_store->push_back(fmtquill::string_view{arg, detail::safe_strnlen(arg)});
     }
     else if constexpr (std::disjunction_v<detail::is_std_string<Arg>, std::is_same<Arg, std::string_view>>)
     {
       std::string_view arg = decode_arg(buffer);
 
-      // pass the string_view to args_store to avoid the dynamic allocation
-      // we pass fmtquill::string_view since fmt/base.h includes a formatter for that type.
-      // for std::string_view we would need fmt/format.h
+      // Store a view of the decoded bytes instead of copying them into an owned string
       args_store->push_back(fmtquill::string_view{arg.data(), arg.size()});
     }
     else
@@ -352,8 +396,99 @@ struct Codec
   }
 };
 
+/** Encodes the two buffers as a std::string_view of their bytes is encoded, and decodes that view */
+template <>
+struct Codec<detail::BinaryBuffers>
+{
+  /***/
+  QUILL_NODISCARD QUILL_ATTRIBUTE_HOT static size_t compute_encoded_size(SizeCacheVector& /* conditional_arg_size_cache */,
+                                                                         detail::BinaryBuffers const& arg) noexcept
+  {
+    return sizeof(uint32_t) + arg.first_size + arg.second_size;
+  }
+
+  /***/
+  QUILL_ATTRIBUTE_HOT static void encode(std::byte*& buffer,
+                                         SizeCacheVector const& /* conditional_arg_size_cache */,
+                                         uint32_t& /* conditional_arg_size_cache_index */,
+                                         detail::BinaryBuffers const& arg) noexcept
+  {
+    // Local copy improves generated code (avoids aliasing penalties)
+    std::byte* buf_ptr = buffer;
+
+    uint32_t const len = arg.first_size + arg.second_size;
+    std::memcpy(buf_ptr, &len, sizeof(len));
+    buf_ptr += sizeof(len);
+
+    // Only copy if length > 0 to avoid UBSAN with nullptr in memcpy
+    if (arg.first_size != 0)
+    {
+      std::memcpy(buf_ptr, arg.first, arg.first_size);
+      buf_ptr += arg.first_size;
+    }
+
+    if (arg.second_size != 0)
+    {
+      std::memcpy(buf_ptr, arg.second, arg.second_size);
+      buf_ptr += arg.second_size;
+    }
+
+    buffer = buf_ptr;
+  }
+
+  /***/
+  QUILL_NODISCARD static std::string_view decode_arg(std::byte*& buffer)
+  {
+    return Codec<std::string_view>::decode_arg(buffer);
+  }
+
+  /***/
+  static void decode_and_store_arg(std::byte*& buffer, DynamicFormatArgStore* args_store)
+  {
+    Codec<std::string_view>::decode_and_store_arg(buffer, args_store);
+  }
+};
+
 namespace detail
 {
+/**
+ * True on Windows for the wide string types encoded by quill/std/WideString.h. Always false on
+ * other platforms, where Quill has no wide string codec and containers decode as their own type.
+ */
+template <typename T>
+constexpr bool is_wide_string_v =
+#if defined(_WIN32)
+  std::disjunction_v<std::is_same<T, wchar_t*>, std::is_same<T, wchar_t const*>,
+                     std::is_same<T, std::wstring>, std::is_same<T, std::wstring_view>>;
+#else
+  false;
+#endif
+
+/**
+ * Decodes one element of a container or wrapper type for formatting, e.g. a std::vector element,
+ * a std::pair member or the value of a std::optional. Used by the codecs in quill/std/.
+ *
+ * Codec<T>::decode_arg() returns the decoded value as encoded, e.g. std::wstring_view for a
+ * std::wstring, so that decode_members() can assign it back to a member of type T. A container
+ * of such values is formatted with a narrow format string, which cannot format wide strings, so
+ * on Windows this converts wide strings to UTF-8 std::string. Every other type is forwarded to
+ * Codec<T>::decode_arg() unchanged, including a reference it returns.
+ */
+template <typename T>
+QUILL_NODISCARD decltype(auto) decode_element(std::byte*& buffer)
+{
+#if defined(_WIN32)
+  if constexpr (is_wide_string_v<T>)
+  {
+    return utf8_encode(Codec<T>::decode_arg(buffer));
+  }
+  else
+#endif
+  {
+    return Codec<T>::decode_arg(buffer);
+  }
+}
+
 /**
  * @brief Calculates the total size required to encode the provided arguments
 
@@ -422,7 +557,7 @@ inline constexpr FormatArgsDecoder decoder_ptr = &decode_and_store_args<remove_c
 /** Codec helpers for user defined types convenience **/
 /***/
 template <typename... TMembers>
-size_t compute_total_encoded_size(detail::SizeCacheVector& conditional_arg_size_cache, TMembers const&... members)
+size_t compute_total_encoded_size(SizeCacheVector& conditional_arg_size_cache, TMembers const&... members)
 {
   size_t total_size{0};
   ((total_size += Codec<detail::remove_cvref_t<TMembers>>::compute_encoded_size(conditional_arg_size_cache, members)),
@@ -432,7 +567,7 @@ size_t compute_total_encoded_size(detail::SizeCacheVector& conditional_arg_size_
 
 /***/
 template <typename... TMembers>
-void encode_members(std::byte*& buffer, detail::SizeCacheVector const& conditional_arg_size_cache,
+void encode_members(std::byte*& buffer, SizeCacheVector const& conditional_arg_size_cache,
                     uint32_t& conditional_arg_size_cache_index, TMembers const&... members)
 {
   ((Codec<detail::remove_cvref_t<TMembers>>::encode(buffer, conditional_arg_size_cache,

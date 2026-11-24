@@ -8,10 +8,16 @@
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
+#include <fstream>
+#include <iterator>
 #include <limits>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+  #include <winioctl.h>
+#else
   #include <sys/stat.h>
 #endif
 
@@ -46,6 +52,7 @@ public:
 
   void set_fail_on_call(uint32_t n) { _fail_on_call = n; }
   void reset_rename_count() { _rename_call_count = 0; }
+  void expire_rotation_retry_interval() { _next_rotation_attempt = {}; }
 
   std::deque<FileInfo> const& created_files() const { return _created_files; }
 
@@ -65,6 +72,30 @@ private:
   uint32_t _fail_on_call{0};
 };
 
+/** The bytes of a file, without the newline translation of a text stream */
+std::string read_file_bytes(fs::path const& filename)
+{
+  std::ifstream file{filename, std::ios::binary};
+  return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+}
+
+void write_log_statement(RotatingFileSink& sink, uint64_t timestamp, std::string_view log_statement)
+{
+  sink.write_log(LogRecord{nullptr,
+                           timestamp,
+                           std::string_view{},
+                           std::string_view{},
+                           std::string{},
+                           std::string_view{},
+                           LogLevel::Info,
+                           "INFO",
+                           "I",
+                           nullptr,
+                           "",
+                           log_statement,
+                           {}});
+}
+
 void check_deadline_saturation(char const* filename_stem, RotatingFileSinkConfig const& cfg)
 {
   fs::path const filename = std::string{filename_stem} + ".log";
@@ -76,17 +107,49 @@ void check_deadline_saturation(char const* filename_stem, RotatingFileSinkConfig
   testing::remove_file(filename_2);
 
   std::chrono::system_clock::time_point const start_time{
-    std::chrono::duration_cast<std::chrono::system_clock::duration>(
-      std::chrono::seconds{1'672'531'200})};
+    std::chrono::duration_cast<std::chrono::system_clock::duration>(std::chrono::seconds{1'672'531'200})};
 
   {
     RotatingFileSink sink{filename, cfg, FileEventNotifier{}, start_time};
-    sink.write_log(nullptr, 1'672'531'200'000'000'000ull, {}, {}, {}, {}, LogLevel::Info, "INFO",
-                   "I", nullptr, {}, "first\n");
-    sink.write_log(nullptr, (std::numeric_limits<uint64_t>::max)() - 10'000'000'000ull, {}, {}, {},
-                   {}, LogLevel::Info, "INFO", "I", nullptr, {}, "near max\n");
-    sink.write_log(nullptr, (std::numeric_limits<uint64_t>::max)() - 5'000'000'000ull, {}, {}, {},
-                   {}, LogLevel::Info, "INFO", "I", nullptr, {}, "still near max\n");
+    sink.write_log(LogRecord{nullptr,
+                             1'672'531'200'000'000'000ull,
+                             {},
+                             {},
+                             {},
+                             {},
+                             LogLevel::Info,
+                             "INFO",
+                             "I",
+                             nullptr,
+                             {},
+                             "first\n",
+                             {}});
+    sink.write_log(LogRecord{nullptr,
+                             (std::numeric_limits<uint64_t>::max)() - 10'000'000'000ull,
+                             {},
+                             {},
+                             {},
+                             {},
+                             LogLevel::Info,
+                             "INFO",
+                             "I",
+                             nullptr,
+                             {},
+                             "near max\n",
+                             {}});
+    sink.write_log(LogRecord{nullptr,
+                             (std::numeric_limits<uint64_t>::max)() - 5'000'000'000ull,
+                             {},
+                             {},
+                             {},
+                             {},
+                             LogLevel::Info,
+                             "INFO",
+                             "I",
+                             nullptr,
+                             {},
+                             "still near max\n",
+                             {}});
   }
 
   std::vector<std::string> const current_contents = testing::file_contents(filename);
@@ -108,6 +171,11 @@ TEST_CASE("rotating_file_sink_config_rejects_invalid_daily_rotation_time")
 #if !defined(QUILL_NO_EXCEPTIONS)
   RotatingFileSinkConfig cfg;
 
+  cfg.set_rotation_frequency_and_interval('H', 3);
+  REQUIRE_THROWS_AS(cfg.set_rotation_time_daily("25:00"), QuillError);
+  REQUIRE_EQ(cfg.rotation_frequency(), RotatingFileSinkConfig::RotationFrequency::Hourly);
+  REQUIRE_EQ(cfg.rotation_interval(), 3u);
+
   REQUIRE_NOTHROW(cfg.set_rotation_time_daily("08:30"));
   REQUIRE_EQ(cfg.daily_rotation_time().first, std::chrono::hours{8});
   REQUIRE_EQ(cfg.daily_rotation_time().second, std::chrono::minutes{30});
@@ -116,6 +184,10 @@ TEST_CASE("rotating_file_sink_config_rejects_invalid_daily_rotation_time")
   REQUIRE_THROWS_AS(cfg.set_rotation_time_daily("ab:cd"), QuillError);
   REQUIRE_THROWS_AS(cfg.set_rotation_time_daily("24:00"), QuillError);
   REQUIRE_THROWS_AS(cfg.set_rotation_time_daily("23:60"), QuillError);
+  REQUIRE_THROWS_AS(cfg.set_rotation_time_daily(""), QuillError);
+  REQUIRE_THROWS_AS(cfg.set_rotation_time_daily("8:30"), QuillError);
+  REQUIRE_THROWS_AS(cfg.set_rotation_time_daily("0830"), QuillError);
+  REQUIRE_THROWS_AS(cfg.set_rotation_time_daily("08:300"), QuillError);
 #else
   return;
 #endif
@@ -153,8 +225,7 @@ TEST_CASE("rotating_file_sink_rejects_unrepresentable_start_timestamp")
     auto const out_of_range_seconds = static_cast<std::chrono::seconds::rep>(
       static_cast<uint64_t>((std::numeric_limits<time_t>::max)()) + 1u);
     std::chrono::system_clock::time_point const start_time{
-      std::chrono::duration_cast<std::chrono::system_clock::duration>(
-        std::chrono::seconds{out_of_range_seconds})};
+      std::chrono::duration_cast<std::chrono::system_clock::duration>(std::chrono::seconds{out_of_range_seconds})};
 
     REQUIRE_THROWS_AS(
       [&]() { RotatingFileSink sink(filename, cfg, FileEventNotifier{}, start_time); }(), QuillError);
@@ -197,8 +268,19 @@ TEST_CASE("rotating_file_sink_index_no_backup_limit")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -261,8 +343,19 @@ TEST_CASE("rotating_file_sink_index_with_backup_limit_overwrite_rolled_files")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -322,8 +415,19 @@ TEST_CASE("rotating_file_sink_index_with_backup_limit_dont_overwrite_rolled_file
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -383,8 +487,19 @@ TEST_CASE("rotating_file_sink_rename_failure_preserves_current_file_and_state")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -394,6 +509,70 @@ TEST_CASE("rotating_file_sink_rename_failure_preserves_current_file_and_state")
   std::vector<std::string> const file_contents = testing::file_contents(filename);
   REQUIRE_EQ(testing::file_contains(file_contents, "Record [0]"), true);
   REQUIRE_EQ(testing::file_contains(file_contents, "Record [1]"), true);
+
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+}
+
+TEST_CASE("time_rotation_retries_failed_rename_before_next_rotation_time")
+{
+  // A time rotation whose rename failed stays due, so it is retried once the retry interval has
+  // passed instead of at the next scheduled rotation
+  fs::path const filename = "time_rotation_retries_failed_rename_before_next_rotation_time.log";
+  fs::path const filename_1 = "time_rotation_retries_failed_rename_before_next_rotation_time.1.log";
+
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+
+  // 2023-01-01 00:30:00 UTC, so the first hourly rotation is due at 01:00:00
+  std::chrono::system_clock::time_point const start_time{std::chrono::seconds{1672533000}};
+  uint64_t const start_time_ns = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(start_time.time_since_epoch()).count());
+  uint64_t const one_hour_ns = 3600ull * 1'000'000'000ull;
+
+  auto write_record = [](auto& sink, std::string const& message, uint64_t timestamp)
+  {
+    sink.write_log(LogRecord{nullptr,
+                             timestamp,
+                             std::string_view{},
+                             std::string_view{},
+                             std::string{},
+                             std::string_view{},
+                             LogLevel::Info,
+                             "INFO",
+                             "I",
+                             nullptr,
+                             "",
+                             message,
+                             {}});
+  };
+
+  {
+    RotatingFileSinkConfig cfg;
+    cfg.set_open_mode('w');
+    cfg.set_rotation_frequency_and_interval('H', 1);
+
+    PartialFailingRenameRotatingFileSink sink{filename, cfg, FileEventNotifier{}, start_time};
+    sink.set_fail_on_call(1);
+
+    write_record(sink, "Record A\n", start_time_ns + 1'000'000'000ull);
+
+    // The rotation is due but its rename fails, so the record stays in the current file
+    write_record(sink, "Record B\n", start_time_ns + one_hour_ns);
+    REQUIRE_FALSE(fs::exists(filename_1));
+
+    sink.expire_rotation_retry_interval();
+    write_record(sink, "Record C\n", start_time_ns + one_hour_ns + 2'000'000'000ull);
+  }
+
+  std::vector<std::string> const backup_contents = testing::file_contents(filename_1);
+  REQUIRE_EQ(backup_contents.size(), 2u);
+  REQUIRE_EQ(backup_contents[0], "Record A");
+  REQUIRE_EQ(backup_contents[1], "Record B");
+
+  std::vector<std::string> const file_contents = testing::file_contents(filename);
+  REQUIRE_EQ(file_contents.size(), 1u);
+  REQUIRE_EQ(file_contents[0], "Record C");
 
   testing::remove_file(filename);
   testing::remove_file(filename_1);
@@ -414,12 +593,14 @@ TEST_CASE("rotating_file_sink_size_check_does_not_overflow")
     TrackedSizeRotatingFileSink sink{filename, cfg, FileEventNotifier{}};
 
     std::string const first_record = "first record";
-    sink.write_log(nullptr, 0, {}, {}, {}, {}, LogLevel::Info, "INFO", "I", nullptr, {}, first_record);
-    sink.flush_sink();
+    sink.write_log(LogRecord{
+      nullptr, 0, {}, {}, {}, {}, LogLevel::Info, "INFO", "I", nullptr, {}, first_record, {}});
+    sink.flush_sink(SinkFlushReason::Explicit);
 
     sink.set_tracked_file_size((std::numeric_limits<size_t>::max)() - 8u);
     std::string const second_record = "second record that crosses the tracked size boundary";
-    sink.write_log(nullptr, 0, {}, {}, {}, {}, LogLevel::Info, "INFO", "I", nullptr, {}, second_record);
+    sink.write_log(LogRecord{
+      nullptr, 0, {}, {}, {}, {}, LogLevel::Info, "INFO", "I", nullptr, {}, second_record, {}});
   }
 
   REQUIRE(fs::exists(filename));
@@ -487,18 +668,29 @@ TEST_CASE("rotating_file_sink_size_rotation_after_deleted_file_reopen")
       f.resize(590);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     };
 
     write_record(0);
-    rfh.flush_sink();
+    rfh.flush_sink(SinkFlushReason::Explicit);
 
     // Simulate an external process (e.g. logrotate) deleting the active log file
     fs::remove(filename);
 
     write_record(1);
-    rfh.flush_sink(); // detects the deleted file and reopens a fresh one
+    rfh.flush_sink(SinkFlushReason::Explicit); // detects the deleted file and reopens a fresh one
 
     // Both records fit inside rotation_max_file_size of the recreated file. A stale
     // _file_size carried over from before the reopen would trigger a bogus rotation here
@@ -534,8 +726,19 @@ TEST_CASE("rotating_json_file_sink_size_rotation_uses_actual_json_size")
 
   auto write_json_record = [&named_args](auto& sink)
   {
-    sink.write_log(&macro_metadata, 0, "thread_id", "thread_name", "process_id", "logger_name",
-                   LogLevel::Info, "INFO", "I", &named_args, "ignored_log_message", "x");
+    sink.write_log(LogRecord{&macro_metadata,
+                             0,
+                             "thread_id",
+                             "thread_name",
+                             "process_id",
+                             "logger_name",
+                             LogLevel::Info,
+                             "INFO",
+                             "I",
+                             &named_args,
+                             "ignored_log_message",
+                             "x",
+                             {}});
   };
 
   size_t estimated_json_size = 0;
@@ -545,7 +748,7 @@ TEST_CASE("rotating_json_file_sink_size_rotation_uses_actual_json_size")
 
     JsonFileSink json_sink{estimate_filename, cfg, FileEventNotifier{}};
     write_json_record(json_sink);
-    json_sink.flush_sink();
+    json_sink.flush_sink(SinkFlushReason::Explicit);
 
     estimated_json_size = static_cast<size_t>(fs::file_size(estimate_filename));
   }
@@ -563,7 +766,7 @@ TEST_CASE("rotating_json_file_sink_size_rotation_uses_actual_json_size")
 
     RotatingJsonFileSink rotating_json_sink{filename, cfg, FileEventNotifier{}};
     write_json_record(rotating_json_sink);
-    rotating_json_sink.flush_sink();
+    rotating_json_sink.flush_sink(SinkFlushReason::Explicit);
     write_json_record(rotating_json_sink);
   }
 
@@ -602,9 +805,19 @@ TEST_CASE("rotating_json_file_sink_failed_rotation_does_not_replay_stale_message
   auto write_json_record = [](auto& sink, std::string const& payload, uint64_t timestamp)
   {
     std::vector<std::pair<std::string, std::string>> named_args{{"payload", payload}};
-    sink.write_log(&macro_metadata, timestamp, "thread_id", "thread_name", "process_id",
-                   "logger_name", LogLevel::Info, "INFO", "I", &named_args, "ignored_log_message",
-                   "x");
+    sink.write_log(LogRecord{&macro_metadata,
+                             timestamp,
+                             "thread_id",
+                             "thread_name",
+                             "process_id",
+                             "logger_name",
+                             LogLevel::Info,
+                             "INFO",
+                             "I",
+                             &named_args,
+                             "ignored_log_message",
+                             "x",
+                             {}});
   };
 
   // 2023-01-01 00:30:00 UTC; hourly rotation puts the first time boundary at most one hour later
@@ -627,7 +840,7 @@ TEST_CASE("rotating_json_file_sink_failed_rotation_does_not_replay_stale_message
 
     JsonFileSink json_sink{estimate_filename, cfg, FileEventNotifier{}};
     write_json_record(json_sink, payload_a, record_ab_timestamp);
-    json_sink.flush_sink();
+    json_sink.flush_sink(SinkFlushReason::Explicit);
 
     estimated_json_size = static_cast<size_t>(fs::file_size(estimate_filename));
   }
@@ -738,8 +951,19 @@ TEST_CASE("rotating_file_sink_index_open_mode_write_clean_up_old_files")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -827,8 +1051,19 @@ TEST_CASE("rotating_file_sink_index_open_mode_write_dont_clean_up_old_files")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -907,8 +1142,19 @@ TEST_CASE("rotating_file_sink_index_open_mode_append")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -949,6 +1195,53 @@ TEST_CASE("rotating_file_sink_index_open_mode_append")
   testing::remove_file(filename_4);
   testing::remove_file(filename_5);
   testing::remove_file(filename_6);
+}
+
+/***/
+TEST_CASE("rotating_file_sink_append_recovers_case_alias")
+{
+  fs::path const directory = "rotating_file_sink_append_recovers_case_alias";
+  fs::path const filename = directory / "app.log";
+  fs::path const alias_filename = directory / "App.log";
+  fs::path const backup_1 = directory / "app.1.log";
+  fs::path const backup_2 = directory / "app.2.log";
+
+  RotatingFileSinkConfig config;
+  config.set_open_mode('a');
+  config.set_rotation_max_file_size(512);
+  config.set_max_backup_files(5);
+  config.set_overwrite_rolled_files(false);
+
+  auto write_record = [](RotatingFileSink& sink, char value)
+  {
+    sink.write_log(LogRecord{
+      nullptr, 0, {}, {}, {}, {}, LogLevel::Info, "INFO", "I", nullptr, {}, std::string(399, value) + '\n', {}});
+  };
+
+  {
+    RotatingFileSink sink{filename, config};
+    write_record(sink, 'A');
+    write_record(sink, 'B');
+  }
+
+  // This scenario requires the actual filesystem to treat these spellings as aliases.
+  if (!fs::exists(alias_filename))
+  {
+    fs::remove_all(directory);
+    return;
+  }
+  REQUIRE(fs::equivalent(filename, alias_filename));
+  REQUIRE(testing::file_contents(backup_1) == std::vector<std::string>{std::string(399, 'A')});
+
+  {
+    RotatingFileSink sink{alias_filename, config};
+    write_record(sink, 'C');
+  }
+
+  REQUIRE(testing::file_contents(filename) == std::vector<std::string>{std::string(399, 'C')});
+  REQUIRE(testing::file_contents(backup_1) == std::vector<std::string>{std::string(399, 'B')});
+  REQUIRE(testing::file_contents(backup_2) == std::vector<std::string>{std::string(399, 'A')});
+  fs::remove_all(directory);
 }
 
 /** Tests for scheme date **/
@@ -997,8 +1290,19 @@ TEST_CASE("rotating_file_sink_date_no_backup_limit")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230612, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230612,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     {
@@ -1011,8 +1315,19 @@ TEST_CASE("rotating_file_sink_date_no_backup_limit")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230613, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230613,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     // change the date and rotate again
@@ -1027,8 +1342,19 @@ TEST_CASE("rotating_file_sink_date_no_backup_limit")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230614, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230614,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -1119,8 +1445,19 @@ TEST_CASE("rotating_file_sink_date_with_backup_limit_overwrite_rolled_files")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230612, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230612,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     {
@@ -1134,8 +1471,19 @@ TEST_CASE("rotating_file_sink_date_with_backup_limit_overwrite_rolled_files")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230613, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230613,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     // change the date and rotate again
@@ -1150,8 +1498,19 @@ TEST_CASE("rotating_file_sink_date_with_backup_limit_overwrite_rolled_files")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230614, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230614,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -1222,8 +1581,19 @@ TEST_CASE("rotating_file_sink_date_with_backup_limit_dont_overwrite_rolled_files
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230612, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230612,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     {
@@ -1237,8 +1607,19 @@ TEST_CASE("rotating_file_sink_date_with_backup_limit_dont_overwrite_rolled_files
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230613, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230613,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     // change the date and rotate again
@@ -1253,8 +1634,19 @@ TEST_CASE("rotating_file_sink_date_with_backup_limit_dont_overwrite_rolled_files
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230614, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230614,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -1350,8 +1742,19 @@ TEST_CASE("rotating_file_sink_date_open_mode_write_clean_up_old_files")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230612, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230612,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -1441,8 +1844,19 @@ TEST_CASE("rotating_file_sink_date_open_mode_write_dont_clean_up_old_files")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230612, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230612,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -1531,8 +1945,19 @@ TEST_CASE("rotating_file_sink_data_open_mode_append")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230612, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230612,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -1632,8 +2057,19 @@ TEST_CASE("rotating_file_sink_dateandtime_no_backup_limit")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230612, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230612,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     {
@@ -1648,8 +2084,19 @@ TEST_CASE("rotating_file_sink_dateandtime_no_backup_limit")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230613, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230613,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     {
@@ -1663,8 +2110,19 @@ TEST_CASE("rotating_file_sink_dateandtime_no_backup_limit")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230613_2, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230613_2,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     // change the date and rotate again
@@ -1679,8 +2137,19 @@ TEST_CASE("rotating_file_sink_dateandtime_no_backup_limit")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230614, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230614,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -1777,8 +2246,19 @@ TEST_CASE("rotating_file_sink_dateandtime_with_backup_limit_overwrite_rolled_fil
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     {
@@ -1792,8 +2272,19 @@ TEST_CASE("rotating_file_sink_dateandtime_with_backup_limit_overwrite_rolled_fil
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230613, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230613,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     // change the date and rotate again
@@ -1808,8 +2299,19 @@ TEST_CASE("rotating_file_sink_dateandtime_with_backup_limit_overwrite_rolled_fil
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230614, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230614,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -1887,8 +2389,19 @@ TEST_CASE("rotating_file_sink_dateandtime_with_backup_limit_dont_overwrite_rolle
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230612, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230612,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     {
@@ -1902,8 +2415,19 @@ TEST_CASE("rotating_file_sink_dateandtime_with_backup_limit_dont_overwrite_rolle
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230613, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230613,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     // change the date and rotate again
@@ -1918,8 +2442,19 @@ TEST_CASE("rotating_file_sink_dateandtime_with_backup_limit_dont_overwrite_rolle
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230614, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230614,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -2015,8 +2550,19 @@ TEST_CASE("rotating_file_sink_date_append_recovers_previous_run_files")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230612, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230612,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -2106,8 +2652,19 @@ TEST_CASE("rotating_file_sink_dateandtime_append_recovers_previous_run_files")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230612, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230612,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     {
@@ -2120,8 +2677,19 @@ TEST_CASE("rotating_file_sink_dateandtime_append_recovers_previous_run_files")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230613, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230613,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -2218,8 +2786,19 @@ TEST_CASE("rotating_file_sink_dateandtime_append_recovers_previous_run_files_wit
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230612, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230612,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     {
@@ -2231,8 +2810,19 @@ TEST_CASE("rotating_file_sink_dateandtime_append_recovers_previous_run_files_wit
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230613, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230613,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -2314,8 +2904,19 @@ TEST_CASE("rotating_file_sink_dateandtime_append_dont_overwrite_preserves_previo
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp_20230612, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp_20230612,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -2383,10 +2984,21 @@ TEST_CASE("time_rotation_minutes_rotating_file_sink_index")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
 
-      timestamp += std::chrono::nanoseconds(std::chrono::minutes(1)).count();
+      timestamp += static_cast<uint64_t>(std::chrono::nanoseconds(std::chrono::minutes(1)).count());
     }
   }
 
@@ -2417,6 +3029,144 @@ TEST_CASE("time_rotation_minutes_rotating_file_sink_index")
   testing::remove_file(filename_2);
   testing::remove_file(filename_3);
   testing::remove_file(filename_4);
+}
+
+/***/
+TEST_CASE("time_rotation_skipped_for_empty_file_dates_next_backup_from_first_record")
+{
+  uint64_t const timestamp_20230612 = 1686528000000000000;
+  uint64_t const one_minute_ns = std::chrono::nanoseconds(std::chrono::minutes(1)).count();
+
+  fs::path const filename = "time_rotation_skipped_for_empty_file.log";
+
+  // Opened at 00:00, but the first record arrives at 00:10, so that backup covers 00:10 onwards
+  fs::path const expected_backup = "time_rotation_skipped_for_empty_file.20230612_001000.log";
+  fs::path const stale_backup = "time_rotation_skipped_for_empty_file.20230612_000000.log";
+
+  {
+    auto rfh = RotatingFileSink{
+      filename,
+      []()
+      {
+        RotatingFileSinkConfig cfg;
+        cfg.set_rotation_frequency_and_interval('m', 1);
+        cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::DateAndTime);
+        cfg.set_timezone(Timezone::GmtTime);
+        cfg.set_open_mode('w');
+        return cfg;
+      }(),
+      FileEventNotifier{},
+      std::chrono::time_point<std::chrono::system_clock>(std::chrono::seconds(timestamp_20230612 / 1000000000))};
+
+    rfh.write_log(LogRecord{nullptr,
+                            timestamp_20230612 + 10 * one_minute_ns,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            "Record [0]\n",
+                            {}});
+    rfh.write_log(LogRecord{nullptr,
+                            timestamp_20230612 + 11 * one_minute_ns,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            "Record [1]\n",
+                            {}});
+  }
+
+  REQUIRE_FALSE(fs::exists(stale_backup));
+  REQUIRE(fs::exists(expected_backup));
+  REQUIRE(testing::file_contains(testing::file_contents(expected_backup), "Record [0]"));
+  REQUIRE(testing::file_contains(testing::file_contents(filename), "Record [1]"));
+
+  testing::remove_file(filename);
+  testing::remove_file(expected_backup);
+  testing::remove_file(stale_backup);
+}
+
+/***/
+TEST_CASE("size_rotation_dates_first_backup_from_first_record")
+{
+  uint64_t const timestamp_20230612 = 1686528000000000000;
+  uint64_t const one_day_ns = std::chrono::nanoseconds(std::chrono::hours(24)).count();
+
+  fs::path const filename = "size_rotation_dates_first_backup_from_first_record.log";
+
+  // Created on 2023-06-12, but the first record arrives on 2023-06-15
+  fs::path const expected_backup =
+    "size_rotation_dates_first_backup_from_first_record.20230615.log";
+  fs::path const stale_backup = "size_rotation_dates_first_backup_from_first_record.20230612.log";
+
+  testing::remove_file(filename);
+  testing::remove_file(expected_backup);
+  testing::remove_file(stale_backup);
+
+  {
+    auto rfh = RotatingFileSink{
+      filename,
+      []()
+      {
+        RotatingFileSinkConfig cfg;
+        cfg.set_rotation_max_file_size(512);
+        cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::Date);
+        cfg.set_timezone(Timezone::GmtTime);
+        cfg.set_open_mode('w');
+        return cfg;
+      }(),
+      FileEventNotifier{},
+      std::chrono::time_point<std::chrono::system_clock>(std::chrono::seconds(timestamp_20230612 / 1000000000))};
+
+    // Each record fills more than half of the file, so the second one rotates the first
+    std::string const padding(300, 'x');
+
+    rfh.write_log(LogRecord{nullptr,
+                            timestamp_20230612 + 3 * one_day_ns,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            "Record [0] " + padding + "\n",
+                            {}});
+    rfh.write_log(LogRecord{nullptr,
+                            timestamp_20230612 + 4 * one_day_ns,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            "Record [1] " + padding + "\n",
+                            {}});
+  }
+
+  REQUIRE_FALSE(fs::exists(stale_backup));
+  REQUIRE(fs::exists(expected_backup));
+  REQUIRE(testing::file_contains(testing::file_contents(expected_backup), "Record [0]"));
+  REQUIRE(testing::file_contains(testing::file_contents(filename), "Record [1]"));
+
+  testing::remove_file(filename);
+  testing::remove_file(expected_backup);
+  testing::remove_file(stale_backup);
 }
 
 /***/
@@ -2456,10 +3206,21 @@ TEST_CASE("time_rotation_hours_rotating_file_sink_index")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, timestamp, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
 
-      timestamp += std::chrono::nanoseconds(std::chrono::hours(1)).count();
+      timestamp += static_cast<uint64_t>(std::chrono::nanoseconds(std::chrono::hours(1)).count());
     }
   }
 
@@ -2521,7 +3282,7 @@ TEST_CASE("time_rotation_daily_at_time_rotating_file_sink_index")
       char buffer[80];
 
       // Get the timeinfo struct using std::gmtime#
-      time_t timestamp = ts / 1000000000;
+      time_t timestamp = static_cast<time_t>(ts / 1000000000);
       gmtime_rs(&timestamp, &timeinfo);
 
       // Use std::strftime to format the date
@@ -2536,10 +3297,21 @@ TEST_CASE("time_rotation_daily_at_time_rotating_file_sink_index")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, ts, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              ts,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
 
-      ts += std::chrono::nanoseconds(std::chrono::hours(24)).count();
+      ts += static_cast<uint64_t>(std::chrono::nanoseconds(std::chrono::hours(24)).count());
     }
   }
 
@@ -2610,7 +3382,7 @@ TEST_CASE("max_size_and_time_rotation_daily_at_time_rotating_file_sink_index")
       char buffer[80];
 
       // Get the timeinfo struct using std::gmtime
-      time_t timestamp = ts / 1000000000;
+      time_t timestamp = static_cast<time_t>(ts / 1000000000);
       gmtime_rs(&timestamp, &timeinfo);
 
       // Use std::strftime to format the date
@@ -2620,8 +3392,19 @@ TEST_CASE("max_size_and_time_rotation_daily_at_time_rotating_file_sink_index")
       std::string formatted_log_statement;
       formatted_log_statement.append(s.data(), s.data() + s.size());
 
-      rfh.write_log(nullptr, ts, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              ts,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     {
@@ -2629,7 +3412,7 @@ TEST_CASE("max_size_and_time_rotation_daily_at_time_rotating_file_sink_index")
       char buffer[80];
 
       // Get the timeinfo struct using std::gmtime#
-      time_t timestamp = ts / 1000000000;
+      time_t timestamp = static_cast<time_t>(ts / 1000000000);
       gmtime_rs(&timestamp, &timeinfo);
 
       // Use std::strftime to format the date
@@ -2644,8 +3427,19 @@ TEST_CASE("max_size_and_time_rotation_daily_at_time_rotating_file_sink_index")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, ts, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              ts,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
 
     for (size_t i = 2; i < 4; ++i)
@@ -2654,7 +3448,7 @@ TEST_CASE("max_size_and_time_rotation_daily_at_time_rotating_file_sink_index")
       char buffer[80];
 
       // Get the timeinfo struct using std::gmtime#
-      time_t timestamp = ts / 1000000000;
+      time_t timestamp = static_cast<time_t>(ts / 1000000000);
       gmtime_rs(&timestamp, &timeinfo);
 
       // Use std::strftime to format the date
@@ -2664,10 +3458,21 @@ TEST_CASE("max_size_and_time_rotation_daily_at_time_rotating_file_sink_index")
       std::string formatted_log_statement;
       formatted_log_statement.append(s.data(), s.data() + s.size());
 
-      rfh.write_log(nullptr, ts, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              ts,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
 
-      ts += std::chrono::nanoseconds(std::chrono::hours(24)).count();
+      ts += static_cast<uint64_t>(std::chrono::nanoseconds(std::chrono::hours(24)).count());
     }
 
     {
@@ -2675,7 +3480,7 @@ TEST_CASE("max_size_and_time_rotation_daily_at_time_rotating_file_sink_index")
       char buffer[80];
 
       // Get the timeinfo struct using std::gmtime#
-      time_t timestamp = ts / 1000000000;
+      time_t timestamp = static_cast<time_t>(ts / 1000000000);
       gmtime_rs(&timestamp, &timeinfo);
 
       // Use std::strftime to format the date
@@ -2690,8 +3495,19 @@ TEST_CASE("max_size_and_time_rotation_daily_at_time_rotating_file_sink_index")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, ts, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              ts,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -2779,8 +3595,19 @@ TEST_CASE("rotating_file_sink_index_dont_remove_unrelated_files")
       f.resize(1024);
       formatted_log_statement.append(f.data(), f.data() + f.size());
 
-      rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -2815,7 +3642,8 @@ TEST_CASE("rotating_file_sink_invalid_params")
 {
   fs::path const filename = "rotating_file_sink_invalid_params.log";
 #if !defined(QUILL_NO_EXCEPTIONS)
-  REQUIRE_THROWS(RotatingFileSink{filename, []()
+  REQUIRE_THROWS(RotatingFileSink{filename,
+                                  []()
                                   {
                                     RotatingFileSinkConfig cfg;
                                     cfg.set_rotation_max_file_size(128);
@@ -2827,7 +3655,8 @@ TEST_CASE("rotating_file_sink_invalid_params")
   REQUIRE_FALSE(fs::exists(filename));
 
 #if !defined(QUILL_NO_EXCEPTIONS)
-  REQUIRE_THROWS(RotatingFileSink{filename, []()
+  REQUIRE_THROWS(RotatingFileSink{filename,
+                                  []()
                                   {
                                     RotatingFileSinkConfig cfg;
                                     cfg.set_rotation_frequency_and_interval('Z', 123);
@@ -2839,7 +3668,8 @@ TEST_CASE("rotating_file_sink_invalid_params")
   REQUIRE_FALSE(fs::exists(filename));
 
 #if !defined(QUILL_NO_EXCEPTIONS)
-  REQUIRE_THROWS(RotatingFileSink{filename, []()
+  REQUIRE_THROWS(RotatingFileSink{filename,
+                                  []()
                                   {
                                     RotatingFileSinkConfig cfg;
                                     cfg.set_rotation_frequency_and_interval('M', 0);
@@ -2882,8 +3712,19 @@ TEST_CASE("rotating_file_sink_date_append_mode")
     {
       std::string s{"Record [" + std::to_string(iter_id) + "][" + std::to_string(i) + "]"};
       std::string formatted_log_statement = s + "\n";
-      rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   };
 
@@ -3062,6 +3903,92 @@ TEST_CASE("rotating_file_sink_date_append_mode")
 }
 
 /***/
+TEST_CASE("rotating_file_sink_skips_unrelated_native_windows_filename")
+{
+#if defined(_WIN32)
+  fs::path const directory{"rotating_sink_native_filenames"};
+  fs::create_directories(directory);
+  fs::path const unrelated{directory / (std::wstring{L"unrelated_"} + static_cast<wchar_t>(0xD800) + L".txt")};
+  HANDLE const file{::CreateFileW(unrelated.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr)};
+  if (file == INVALID_HANDLE_VALUE)
+  {
+    // Some filesystems reject an unpaired UTF-16 surrogate in a filename.
+    fs::remove(directory);
+    return;
+  }
+  ::CloseHandle(file);
+
+  fs::path const filename{directory / "ordinary.log"};
+  {
+    RotatingFileSink sink{filename, RotatingFileSinkConfig{}};
+    REQUIRE(fs::exists(filename));
+    REQUIRE(fs::exists(unrelated));
+  }
+  fs::remove(filename);
+  fs::remove(unrelated);
+  fs::remove(directory);
+#endif
+}
+
+/***/
+TEST_CASE("rotating_file_sink_windows_dev_null_discards_output")
+{
+#if defined(_WIN32)
+  FileEventNotifier notifier;
+  notifier.before_open = [](fs::path const&) { FAIL("The null sink should never open a file"); };
+  RotatingFileSink sink{"/dev/null", RotatingFileSinkConfig{}, notifier};
+  REQUIRE(sink.is_null());
+
+  LogRecord record;
+  record.log_statement = "Discarded";
+  sink.write_log(record);
+  sink.flush_sink(SinkFlushReason::Final);
+#endif
+}
+
+/***/
+TEST_CASE("rotating_file_sink_preserves_four_gib_at_startup")
+{
+  // Only a 32-bit build, where size_t is 32 bits, would misread this file size
+#if defined(_WIN32)
+  fs::path const filename{"rotating_file_sink_four_gib.log"};
+  fs::path const backup{"rotating_file_sink_four_gib.1.log"};
+  constexpr uint64_t file_size{1ull << 32};
+  HANDLE const file{::CreateFileW(filename.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr)};
+  REQUIRE(file != INVALID_HANDLE_VALUE);
+
+  DWORD returned{0};
+  LARGE_INTEGER end{};
+  end.QuadPart = static_cast<LONGLONG>(file_size);
+  bool const sparse{::DeviceIoControl(file, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0, &returned, nullptr) != 0};
+  bool const resized{sparse && ::SetFilePointerEx(file, end, nullptr, FILE_BEGIN) && ::SetEndOfFile(file)};
+  ::CloseHandle(file);
+  if (!sparse)
+  {
+    // Avoid allocating 4 GiB on a filesystem without sparse files.
+    fs::remove(filename);
+    return;
+  }
+  REQUIRE(resized);
+
+  RotatingFileSinkConfig config;
+  config.set_open_mode('w');
+  config.set_rotation_max_file_size(1024);
+  config.set_rotation_on_creation(true);
+  {
+    RotatingFileSink sink{filename, config};
+    REQUIRE_EQ(fs::file_size(backup), file_size);
+    REQUIRE_EQ(fs::file_size(filename), 0u);
+  }
+
+  fs::remove(filename);
+  fs::remove(backup);
+#endif
+}
+
+/***/
 TEST_CASE("rotating_file_sink_rotation_on_creation_enabled")
 {
   // Test that when rotation_on_creation is enabled, an existing non-empty file gets rotated on creation
@@ -3085,8 +4012,19 @@ TEST_CASE("rotating_file_sink_rotation_on_creation_enabled")
     std::string formatted_log_statement;
     formatted_log_statement.append(s.data(), s.data() + s.size());
 
-    rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{}, std::string_view{},
-                  LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
   }
 
   REQUIRE(fs::exists(filename));
@@ -3113,8 +4051,19 @@ TEST_CASE("rotating_file_sink_rotation_on_creation_enabled")
     std::string formatted_log_statement;
     formatted_log_statement.append(s.data(), s.data() + s.size());
 
-    rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{}, std::string_view{},
-                  LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
   }
 
   // Verify the rotated file contains the initial record
@@ -3159,8 +4108,19 @@ TEST_CASE("rotating_file_sink_rotation_on_creation_with_date_naming")
     std::string formatted_log_statement;
     formatted_log_statement.append(s.data(), s.data() + s.size());
 
-    rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{}, std::string_view{},
-                  LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
   }
 
   REQUIRE(fs::exists(filename));
@@ -3191,8 +4151,19 @@ TEST_CASE("rotating_file_sink_rotation_on_creation_with_date_naming")
     std::string formatted_log_statement;
     formatted_log_statement.append(s.data(), s.data() + s.size());
 
-    rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{}, std::string_view{},
-                  LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
   }
 
   // Verify the rotated file contains the initial record
@@ -3205,6 +4176,368 @@ TEST_CASE("rotating_file_sink_rotation_on_creation_with_date_naming")
 
   testing::remove_file(filename);
   testing::remove_file(filename_dated);
+}
+
+/***/
+TEST_CASE("rotating_file_sink_rotation_on_creation_dateandtime_same_second_restarts")
+{
+  // Runs in "w" mode do not track the backups of earlier runs, and runs that start within the
+  // same second produce the same DateAndTime backup name. Rotation must not replace that backup,
+  // and the newest backup must keep index 0, which append-mode recovery treats as the newest.
+  fs::path const filename = "rotating_file_sink_rotation_on_creation_dateandtime_same_second.log";
+  fs::path const newest_backup =
+    "rotating_file_sink_rotation_on_creation_dateandtime_same_second.20230612_000000.log";
+  fs::path const oldest_backup =
+    "rotating_file_sink_rotation_on_creation_dateandtime_same_second.20230612_000000.1.log";
+
+  testing::remove_file(filename);
+  testing::remove_file(newest_backup);
+  testing::remove_file(oldest_backup);
+
+  std::chrono::system_clock::time_point const start_time =
+    std::chrono::system_clock::time_point{std::chrono::seconds{1686528000}}; // 2023-06-12 00:00:00
+
+  for (size_t run = 1; run <= 3; ++run)
+  {
+    auto rfh = RotatingFileSink{
+      filename,
+      []()
+      {
+        RotatingFileSinkConfig cfg;
+        cfg.set_rotation_max_file_size(1024);
+        cfg.set_timezone(quill::Timezone::GmtTime);
+        cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::DateAndTime);
+        cfg.set_rotation_on_creation(true);
+        cfg.set_open_mode('w');
+        return cfg;
+      }(),
+      FileEventNotifier{}, start_time};
+
+    std::string const formatted_log_statement{"Run " + std::to_string(run) + "\n"};
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
+  }
+
+  REQUIRE(testing::file_contains(testing::file_contents(newest_backup), "Run 2"));
+  REQUIRE(testing::file_contains(testing::file_contents(oldest_backup), "Run 1"));
+  REQUIRE(testing::file_contains(testing::file_contents(filename), "Run 3"));
+
+  // Recovery in append mode keeps the newest backup when it enforces the backup limit
+  {
+    auto rfh = RotatingFileSink{
+      filename,
+      []()
+      {
+        RotatingFileSinkConfig cfg;
+        cfg.set_rotation_max_file_size(1024);
+        cfg.set_timezone(quill::Timezone::GmtTime);
+        cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::DateAndTime);
+        cfg.set_max_backup_files(1);
+        cfg.set_open_mode('a');
+        return cfg;
+      }(),
+      FileEventNotifier{}, start_time};
+  }
+
+  REQUIRE(testing::file_contains(testing::file_contents(newest_backup), "Run 2"));
+  REQUIRE_FALSE(fs::exists(oldest_backup));
+  REQUIRE(testing::file_contains(testing::file_contents(filename), "Run 3"));
+
+  testing::remove_file(filename);
+  testing::remove_file(newest_backup);
+  testing::remove_file(oldest_backup);
+}
+
+/***/
+TEST_CASE(
+  "rotating_file_sink_rotation_on_creation_dateandtime_same_second_restarts_at_backup_limit")
+{
+  // A backup left by an earlier run within the same second counts towards max_backup_files. With
+  // overwrite_rolled_files disabled, reaching the limit must keep that backup and append to the
+  // current file instead of rotating
+  fs::path const filename = "rotating_file_sink_rotation_on_creation_dateandtime_backup_limit.log";
+  fs::path const backup =
+    "rotating_file_sink_rotation_on_creation_dateandtime_backup_limit.20230612_000000.log";
+  fs::path const second_backup =
+    "rotating_file_sink_rotation_on_creation_dateandtime_backup_limit.20230612_000000.1.log";
+
+  testing::remove_file(filename);
+  testing::remove_file(backup);
+  testing::remove_file(second_backup);
+
+  std::chrono::system_clock::time_point const start_time =
+    std::chrono::system_clock::time_point{std::chrono::seconds{1686528000}}; // 2023-06-12 00:00:00
+
+  for (size_t run = 1; run <= 3; ++run)
+  {
+    auto rfh = RotatingFileSink{
+      filename,
+      []()
+      {
+        RotatingFileSinkConfig cfg;
+        cfg.set_rotation_max_file_size(1024);
+        cfg.set_timezone(quill::Timezone::GmtTime);
+        cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::DateAndTime);
+        cfg.set_rotation_on_creation(true);
+        cfg.set_max_backup_files(1);
+        cfg.set_overwrite_rolled_files(false);
+        cfg.set_open_mode('w');
+        return cfg;
+      }(),
+      FileEventNotifier{}, start_time};
+
+    std::string const formatted_log_statement{"Run " + std::to_string(run) + "\n"};
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
+  }
+
+  std::vector<std::string> const backup_contents = testing::file_contents(backup);
+  REQUIRE_EQ(backup_contents.size(), 1u);
+  REQUIRE_EQ(backup_contents[0], "Run 1");
+  REQUIRE_FALSE(fs::exists(second_backup));
+
+  std::vector<std::string> const file_contents = testing::file_contents(filename);
+  REQUIRE_EQ(file_contents.size(), 2u);
+  REQUIRE_EQ(file_contents[0], "Run 2");
+  REQUIRE_EQ(file_contents[1], "Run 3");
+
+  testing::remove_file(filename);
+  testing::remove_file(backup);
+  testing::remove_file(second_backup);
+}
+
+/***/
+TEST_CASE("rotating_file_sink_dateandtime_does_not_rename_a_directory_named_like_a_backup")
+{
+  fs::path const filename = "rotating_file_sink_dateandtime_directory.log";
+  fs::path const backup_name = "rotating_file_sink_dateandtime_directory.20230612_000000.log";
+  fs::path const renamed_directory =
+    "rotating_file_sink_dateandtime_directory.20230612_000000.1.log";
+  fs::path const file_in_directory = backup_name / "kept.txt";
+
+  std::error_code ec;
+  fs::remove_all(backup_name, ec);
+  fs::remove_all(renamed_directory, ec);
+  testing::remove_file(filename);
+
+  // A directory with the name that the backup of this run gets, and the log file of an earlier run
+  fs::create_directory(backup_name);
+  testing::create_file(file_in_directory, "Kept");
+  testing::create_file(filename, "Previous run");
+
+  std::chrono::system_clock::time_point const start_time =
+    std::chrono::system_clock::time_point{std::chrono::seconds{1686528000}}; // 2023-06-12 00:00:00
+
+  {
+    auto rfh = RotatingFileSink{
+      filename,
+      []()
+      {
+        RotatingFileSinkConfig cfg;
+        cfg.set_rotation_max_file_size(1024);
+        cfg.set_timezone(quill::Timezone::GmtTime);
+        cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::DateAndTime);
+        cfg.set_rotation_on_creation(true);
+        cfg.set_open_mode('w');
+        return cfg;
+      }(),
+      FileEventNotifier{}, start_time};
+  }
+
+  // The directory is not a backup of the sink: it is not renamed to make room for one
+  REQUIRE(fs::is_directory(backup_name));
+  REQUIRE(testing::file_contains(testing::file_contents(file_in_directory), "Kept"));
+  REQUIRE_FALSE(fs::exists(renamed_directory));
+
+  // The log file cannot be rotated to that name, so it is kept with its content
+  REQUIRE(testing::file_contains(testing::file_contents(filename), "Previous run"));
+
+  fs::remove_all(backup_name, ec);
+  testing::remove_file(filename);
+}
+
+/***/
+TEST_CASE("rotating_file_sink_dateandtime_removes_every_backup_over_a_lowered_limit")
+{
+  fs::path const filename = "rotating_file_sink_dateandtime_lowered_limit.log";
+  fs::path const backup = "rotating_file_sink_dateandtime_lowered_limit.20230612_000000.log";
+  fs::path const backup_1 = "rotating_file_sink_dateandtime_lowered_limit.20230612_000000.1.log";
+  fs::path const backup_2 = "rotating_file_sink_dateandtime_lowered_limit.20230612_000000.2.log";
+  fs::path const backup_3 = "rotating_file_sink_dateandtime_lowered_limit.20230612_000000.3.log";
+
+  for (fs::path const& file : {filename, backup, backup_1, backup_2, backup_3})
+  {
+    testing::remove_file(file);
+  }
+
+  // Three earlier runs that started in the same second left their backups, and the last run its log file
+  testing::create_file(backup_2, "Run 1");
+  testing::create_file(backup_1, "Run 2");
+  testing::create_file(backup, "Run 3");
+  testing::create_file(filename, "Run 4");
+
+  std::chrono::system_clock::time_point const start_time =
+    std::chrono::system_clock::time_point{std::chrono::seconds{1686528000}}; // 2023-06-12 00:00:00
+
+  // This run starts in that second as well, with a limit of one backup. Rotating its log file
+  // tracks all three backups, as they have the name of the new one
+  {
+    auto rfh = RotatingFileSink{
+      filename,
+      []()
+      {
+        RotatingFileSinkConfig cfg;
+        cfg.set_rotation_max_file_size(1024);
+        cfg.set_timezone(quill::Timezone::GmtTime);
+        cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::DateAndTime);
+        cfg.set_rotation_on_creation(true);
+        cfg.set_max_backup_files(1);
+        cfg.set_open_mode('w');
+        return cfg;
+      }(),
+      FileEventNotifier{}, start_time};
+  }
+
+  // Only the newest backup is left
+  REQUIRE(testing::file_contains(testing::file_contents(backup), "Run 4"));
+  REQUIRE_FALSE(fs::exists(backup_1));
+  REQUIRE_FALSE(fs::exists(backup_2));
+  REQUIRE_FALSE(fs::exists(backup_3));
+
+  for (fs::path const& file : {filename, backup, backup_1, backup_2, backup_3})
+  {
+    testing::remove_file(file);
+  }
+}
+
+TEST_CASE("rotating_file_sink_dateandtime_local_time_repeated_hour")
+{
+#if defined(_WIN32)
+  // The POSIX TZ rule this test sets is not supported
+  return;
+#else
+  // Local time repeats one hour when daylight saving time ends, so a backup of the second pass
+  // gets the name of a backup of the first pass. Rotation must shift the earlier backup to index
+  // 1 and keep rotating afterwards.
+  std::string previous_tz;
+  bool had_previous_tz = false;
+  char const* const current_tz = std::getenv("TZ");
+
+  if (current_tz)
+  {
+    previous_tz = current_tz;
+    had_previous_tz = true;
+  }
+
+  setenv("TZ", "EST5EDT,M3.2.0/2,M11.1.0/2", 1);
+  tzset();
+
+  // 2025-11-02 04:45:00 UTC is 00:45:00 EDT. Local time goes from 01:59:59 EDT to 01:00:00 EST
+  uint64_t constexpr start_time_s = 1762058700ull;
+  uint64_t constexpr start_time_ns = start_time_s * 1'000'000'000ull;
+  uint64_t constexpr half_hour_ns = 1800ull * 1'000'000'000ull;
+
+  std::string const stem = "rotating_file_sink_dateandtime_local_time_repeated_hour";
+  fs::path const filename = stem + ".log";
+  std::vector<std::string> const backups = {
+    stem + ".20251102_010000.log", stem + ".20251102_011500.log", stem + ".20251102_011500.1.log",
+    stem + ".20251102_014500.log", stem + ".20251102_014500.1.log"};
+
+  testing::remove_file(filename);
+
+  for (std::string const& backup : backups)
+  {
+    testing::remove_file(backup);
+  }
+
+  {
+    auto rfh = RotatingFileSink{
+      filename,
+      []()
+      {
+        RotatingFileSinkConfig cfg;
+        cfg.set_rotation_frequency_and_interval('m', 30);
+        cfg.set_timezone(quill::Timezone::LocalTime);
+        cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::DateAndTime);
+        cfg.set_open_mode('w');
+        return cfg;
+      }(),
+      FileEventNotifier{}, std::chrono::system_clock::time_point{std::chrono::seconds{start_time_s}}};
+
+    // Record 0 at 01:00 EDT, then one record at each rotation: 01:15 EDT, 01:45 EDT, 01:15 EST,
+    // 01:45 EST and 02:15 EST
+    for (uint64_t i = 0; i < 6; ++i)
+    {
+      uint64_t const timestamp =
+        (i == 0) ? (start_time_ns + (half_hour_ns / 2)) : (start_time_ns + (i * half_hour_ns));
+      std::string const formatted_log_statement{"Record [" + std::to_string(i) + "]\n"};
+
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
+    }
+  }
+
+  REQUIRE(testing::file_contains(testing::file_contents(backups[0]), "Record [0]"));
+  REQUIRE(testing::file_contains(testing::file_contents(backups[2]), "Record [1]"));
+  REQUIRE(testing::file_contains(testing::file_contents(backups[4]), "Record [2]"));
+  REQUIRE(testing::file_contains(testing::file_contents(backups[1]), "Record [3]"));
+  REQUIRE(testing::file_contains(testing::file_contents(backups[3]), "Record [4]"));
+
+  std::vector<std::string> const file_contents = testing::file_contents(filename);
+  REQUIRE_EQ(file_contents.size(), 1u);
+  REQUIRE_EQ(file_contents[0], "Record [5]");
+
+  testing::remove_file(filename);
+
+  for (std::string const& backup : backups)
+  {
+    testing::remove_file(backup);
+  }
+
+  if (had_previous_tz)
+  {
+    setenv("TZ", previous_tz.c_str(), 1);
+  }
+  else
+  {
+    unsetenv("TZ");
+  }
+
+  tzset();
+#endif
 }
 
 TEST_CASE("rotating_file_sink_cleanup_preserves_unrelated_prefix_files")
@@ -3227,6 +4560,14 @@ TEST_CASE("rotating_file_sink_cleanup_preserves_unrelated_prefix_files")
   testing::create_file(unrelated_numeric_prefix_filename, "must also survive startup cleanup\n");
   testing::create_file(unrelated_alt_suffix_filename,
                        "must also survive alternate suffix startup cleanup\n");
+
+#if !defined(_WIN32)
+  fs::path const unrelated_link_target = dir / "other.9.log";
+  fs::path const owned_link = dir / "app.9.log";
+  testing::create_file(unrelated_link_target, "keep the target of an owned backup symlink\n");
+  std::error_code link_error;
+  fs::create_symlink(unrelated_link_target.filename(), owned_link, link_error);
+#endif
 
   REQUIRE(fs::exists(rotated_filename));
   REQUIRE(fs::exists(unrelated_filename));
@@ -3251,6 +4592,9 @@ TEST_CASE("rotating_file_sink_cleanup_preserves_unrelated_prefix_files")
   }
 
   REQUIRE_FALSE(fs::exists(rotated_filename));
+#if !defined(_WIN32)
+  REQUIRE(fs::exists(unrelated_link_target));
+#endif
   REQUIRE(fs::exists(unrelated_filename));
   REQUIRE(fs::exists(unrelated_numeric_prefix_filename));
   REQUIRE(fs::exists(unrelated_alt_suffix_filename));
@@ -3350,8 +4694,19 @@ TEST_CASE("rotating_file_sink_partial_rename_failure_corrupts_metadata")
     std::string padding;
     padding.resize(1024);
     formatted_log_statement.append(padding);
-    rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{}, std::string_view{},
-                  LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
   };
 
   // Create 3 rotated files: base.log, base.1.log, base.2.log
@@ -3394,6 +4749,617 @@ TEST_CASE("rotating_file_sink_partial_rename_failure_corrupts_metadata")
 }
 
 /***/
+TEST_CASE("rotating_file_sink_rotates_after_backup_is_removed_externally")
+{
+  fs::path const filename = "rotating_file_sink_backup_removed_externally.log";
+  auto backup = [](uint32_t index)
+  {
+    return fs::path{"rotating_file_sink_backup_removed_externally." + std::to_string(index) +
+                    ".log"};
+  };
+
+  for (uint32_t i = 1; i <= 6; ++i)
+  {
+    testing::remove_file(backup(i));
+  }
+
+  {
+    auto rfh = RotatingFileSink{filename,
+                                []()
+                                {
+                                  RotatingFileSinkConfig cfg;
+                                  cfg.set_rotation_max_file_size(1024);
+                                  cfg.set_open_mode('w');
+                                  return cfg;
+                                }(),
+                                FileEventNotifier{}};
+
+    auto write_record = [&rfh](std::string const& msg)
+    {
+      std::string formatted_log_statement{msg};
+      formatted_log_statement.append(600, 'x');
+      formatted_log_statement.push_back('\n');
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
+    };
+
+    for (size_t i = 0; i < 4; ++i)
+    {
+      write_record("Record_" + std::to_string(i));
+    }
+
+    REQUIRE(fs::exists(backup(3)));
+
+    // e.g. a cron job compresses or deletes the oldest backup while the sink is running
+    testing::remove_file(backup(3));
+
+    for (size_t i = 4; i < 7; ++i)
+    {
+      write_record("Record_" + std::to_string(i));
+      REQUIRE_LE(fs::file_size(filename), 1024u);
+    }
+  }
+
+  std::vector<std::string> const file_contents = testing::file_contents(filename);
+  REQUIRE(testing::file_contains(file_contents, "Record_6"));
+  REQUIRE_EQ(file_contents.size(), 1);
+
+  testing::remove_file(filename);
+  for (uint32_t i = 1; i <= 6; ++i)
+  {
+    testing::remove_file(backup(i));
+  }
+}
+
+/***/
+TEST_CASE("rotating_file_sink_date_scheme_rotates_after_backups_are_removed_externally")
+{
+  // 2023-06-12 and 2023-06-13 at midnight GMT
+  uint64_t const timestamp_20230612 = 1686528000000000000;
+  uint64_t const timestamp_20230613 = 1686614400000000000;
+
+  fs::path const filename = "rotating_file_sink_date_backup_removed_externally.log";
+  fs::path const backup_20230612 = "rotating_file_sink_date_backup_removed_externally.20230612.log";
+  fs::path const backup_20230612_1 =
+    "rotating_file_sink_date_backup_removed_externally.20230612.1.log";
+  fs::path const backup_20230612_2 =
+    "rotating_file_sink_date_backup_removed_externally.20230612.2.log";
+  fs::path const backup_20230613 = "rotating_file_sink_date_backup_removed_externally.20230613.log";
+  fs::path const backup_20230613_1 =
+    "rotating_file_sink_date_backup_removed_externally.20230613.1.log";
+
+  for (fs::path const& backup :
+       {backup_20230612, backup_20230612_1, backup_20230612_2, backup_20230613, backup_20230613_1})
+  {
+    testing::remove_file(backup);
+  }
+
+  {
+    auto rfh = RotatingFileSink{
+      filename,
+      []()
+      {
+        RotatingFileSinkConfig cfg;
+        cfg.set_rotation_max_file_size(1024);
+        cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::Date);
+        cfg.set_timezone(Timezone::GmtTime);
+        cfg.set_open_mode('w');
+        return cfg;
+      }(),
+      FileEventNotifier{},
+      std::chrono::time_point<std::chrono::system_clock>(std::chrono::seconds(timestamp_20230612 / 1000000000))};
+
+    // Each record fills more than half of the size limit, so every record after the first rotates
+    auto write_record = [&rfh](std::string const& msg, uint64_t timestamp)
+    {
+      std::string formatted_log_statement{msg};
+      formatted_log_statement.append(600, 'x');
+      formatted_log_statement.push_back('\n');
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
+    };
+
+    for (size_t i = 0; i < 3; ++i)
+    {
+      write_record("Record_" + std::to_string(i), timestamp_20230612);
+    }
+
+    REQUIRE(fs::exists(backup_20230612_1));
+
+    // A backup that the next rotation renames, as it has the date of that rotation
+    testing::remove_file(backup_20230612_1);
+
+    write_record("Record_3", timestamp_20230612);
+    REQUIRE(fs::exists(backup_20230612_1));
+
+    write_record("Record_4", timestamp_20230613);
+    REQUIRE(fs::exists(backup_20230612_2));
+
+    // A backup with another date than the next rotation, which does not rename it
+    testing::remove_file(backup_20230612_2);
+
+    write_record("Record_5", timestamp_20230613);
+    write_record("Record_6", timestamp_20230613);
+    REQUIRE(fs::exists(backup_20230613_1));
+  }
+
+  std::vector<std::string> const file_contents = testing::file_contents(filename);
+  REQUIRE(testing::file_contains(file_contents, "Record_6"));
+  REQUIRE_EQ(file_contents.size(), 1);
+
+  testing::remove_file(filename);
+  for (fs::path const& backup :
+       {backup_20230612, backup_20230612_1, backup_20230612_2, backup_20230613, backup_20230613_1})
+  {
+    testing::remove_file(backup);
+  }
+}
+
+/***/
+TEST_CASE("rotating_file_sink_index_append_ignores_files_with_an_index_it_does_not_write")
+{
+  fs::path const filename = "rotating_file_sink_index_append_stray_index.log";
+  fs::path const backup_1 = "rotating_file_sink_index_append_stray_index.1.log";
+  fs::path const backup_2 = "rotating_file_sink_index_append_stray_index.2.log";
+  fs::path const backup_3 = "rotating_file_sink_index_append_stray_index.3.log";
+
+  // The sink numbers its backups from 1 without leading zeros, so these are not its backups, e.g.
+  // files that another tool wrote next to the log file
+  fs::path const stray_zero = "rotating_file_sink_index_append_stray_index.0.log";
+  fs::path const stray_zero_padded = "rotating_file_sink_index_append_stray_index.01.log";
+  fs::path const stray_max = "rotating_file_sink_index_append_stray_index.4294967295.log";
+
+  // A backup with the greatest index that the sink writes. It cannot take the next index, which
+  // is the name of stray_max, and the one after that wraps to the name of the log file
+  fs::path const backup_max = "rotating_file_sink_index_append_stray_index.4294967294.log";
+
+  // The backup below it cannot take the next index either, as that file stays, and a backup
+  // further down stops when it reaches them
+  fs::path const backup_below_max = "rotating_file_sink_index_append_stray_index.4294967293.log";
+  fs::path const backup_high = "rotating_file_sink_index_append_stray_index.4294967291.log";
+  fs::path const backup_high_rotated = "rotating_file_sink_index_append_stray_index.4294967292.log";
+
+  for (fs::path const& file : {filename, backup_1, backup_2, backup_3, stray_zero, stray_zero_padded,
+                               stray_max, backup_max, backup_below_max, backup_high, backup_high_rotated})
+  {
+    testing::remove_file(file);
+  }
+
+  // The files of a previous run and the stray files
+  testing::create_file(filename, "Previous_run");
+  testing::create_file(backup_1, "Previous_backup");
+  testing::create_file(stray_zero, "Stray_zero");
+  testing::create_file(stray_zero_padded, "Stray_zero_padded");
+  testing::create_file(stray_max, "Stray_max");
+  testing::create_file(backup_max, "Backup_max");
+  testing::create_file(backup_below_max, "Backup_below_max");
+  testing::create_file(backup_high, "Backup_high");
+
+  {
+    auto rfh = RotatingFileSink{filename,
+                                []()
+                                {
+                                  RotatingFileSinkConfig cfg;
+                                  cfg.set_rotation_max_file_size(1024);
+                                  cfg.set_open_mode('a');
+                                  return cfg;
+                                }(),
+                                FileEventNotifier{}};
+
+    // Each record fills more than half of the size limit, so every record after the first rotates
+    auto write_record = [&rfh](std::string const& msg)
+    {
+      std::string formatted_log_statement{msg};
+      formatted_log_statement.append(600, 'x');
+      formatted_log_statement.push_back('\n');
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
+    };
+
+    for (size_t i = 0; i < 3; ++i)
+    {
+      write_record("Record_" + std::to_string(i));
+    }
+  }
+
+  // The sink rotated twice
+  std::vector<std::string> const file_contents = testing::file_contents(filename);
+  REQUIRE_EQ(file_contents.size(), 1);
+  REQUIRE(testing::file_contains(file_contents, "Record_2"));
+
+  std::vector<std::string> const backup_1_contents = testing::file_contents(backup_1);
+  REQUIRE_EQ(backup_1_contents.size(), 1);
+  REQUIRE(testing::file_contains(backup_1_contents, "Record_1"));
+
+  std::vector<std::string> const backup_2_contents = testing::file_contents(backup_2);
+  REQUIRE(testing::file_contains(backup_2_contents, "Previous_run"));
+  REQUIRE(testing::file_contains(backup_2_contents, "Record_0"));
+
+  REQUIRE(testing::file_contains(testing::file_contents(backup_3), "Previous_backup"));
+
+  // and left the stray files as they were
+  REQUIRE(testing::file_contains(testing::file_contents(stray_zero), "Stray_zero"));
+  REQUIRE(testing::file_contains(testing::file_contents(stray_zero_padded), "Stray_zero_padded"));
+  REQUIRE(testing::file_contains(testing::file_contents(stray_max), "Stray_max"));
+  REQUIRE(testing::file_contains(testing::file_contents(backup_max), "Backup_max"));
+
+  // The backups at the greatest indexes are where they were. The first rotation renamed the one
+  // further down to the index below them, and the second rotation left it there
+  REQUIRE(testing::file_contains(testing::file_contents(backup_below_max), "Backup_below_max"));
+  REQUIRE(testing::file_contains(testing::file_contents(backup_high_rotated), "Backup_high"));
+  REQUIRE_FALSE(fs::exists(backup_high));
+
+  for (fs::path const& file : {filename, backup_1, backup_2, backup_3, stray_zero, stray_zero_padded,
+                               stray_max, backup_max, backup_below_max, backup_high, backup_high_rotated})
+  {
+    testing::remove_file(file);
+  }
+}
+
+/***/
+TEST_CASE("rotating_file_sink_index_append_does_not_track_a_directory_named_like_a_backup")
+{
+  fs::path const filename = "rotating_file_sink_index_append_directory.log";
+  fs::path const backup_name = "rotating_file_sink_index_append_directory.1.log";
+  fs::path const renamed_directory = "rotating_file_sink_index_append_directory.2.log";
+  fs::path const file_in_directory = backup_name / "kept.txt";
+
+  std::error_code ec;
+  fs::remove_all(backup_name, ec);
+  fs::remove_all(renamed_directory, ec);
+  testing::remove_file(filename);
+
+  // A directory with the name of the first backup, and the log file of an earlier run
+  fs::create_directory(backup_name);
+  testing::create_file(file_in_directory, "Kept");
+  testing::create_file(filename, "Previous_run");
+
+  {
+    auto rfh = RotatingFileSink{filename,
+                                []()
+                                {
+                                  RotatingFileSinkConfig cfg;
+                                  cfg.set_rotation_max_file_size(1024);
+                                  cfg.set_open_mode('a');
+                                  return cfg;
+                                }(),
+                                FileEventNotifier{}};
+
+    // Each record fills more than half of the size limit, so the second one rotates
+    for (size_t i = 0; i < 2; ++i)
+    {
+      std::string formatted_log_statement{"Record_" + std::to_string(i)};
+      formatted_log_statement.append(600, 'x');
+      formatted_log_statement.push_back('\n');
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
+    }
+  }
+
+  // The directory is not a backup of the sink: the rotation does not rename it to the next index
+  REQUIRE(fs::is_directory(backup_name));
+  REQUIRE(testing::file_contains(testing::file_contents(file_in_directory), "Kept"));
+  REQUIRE_FALSE(fs::exists(renamed_directory));
+
+  // The log file cannot be rotated to that name, so it keeps every record
+  std::vector<std::string> const file_contents = testing::file_contents(filename);
+  REQUIRE(testing::file_contains(file_contents, "Previous_run"));
+  REQUIRE(testing::file_contains(file_contents, "Record_0"));
+  REQUIRE(testing::file_contains(file_contents, "Record_1"));
+
+  fs::remove_all(backup_name, ec);
+  testing::remove_file(filename);
+}
+
+/***/
+TEST_CASE("rotating_file_sink_index_clean_up_keeps_files_with_an_index_it_does_not_write")
+{
+  fs::path const filename = "rotating_file_sink_index_clean_up_stray_index.log";
+  fs::path const backup_1 = "rotating_file_sink_index_clean_up_stray_index.1.log";
+  fs::path const stray_zero = "rotating_file_sink_index_clean_up_stray_index.0.log";
+  fs::path const stray_zero_padded = "rotating_file_sink_index_clean_up_stray_index.01.log";
+  fs::path const stray_max = "rotating_file_sink_index_clean_up_stray_index.4294967295.log";
+
+  testing::create_file(filename, "Previous_run");
+  testing::create_file(backup_1, "Previous_backup");
+  testing::create_file(stray_zero, "Stray_zero");
+  testing::create_file(stray_zero_padded, "Stray_zero_padded");
+  testing::create_file(stray_max, "Stray_max");
+
+  {
+    auto rfh = RotatingFileSink{filename,
+                                []()
+                                {
+                                  RotatingFileSinkConfig cfg;
+                                  cfg.set_remove_old_files(true);
+                                  cfg.set_rotation_max_file_size(1024);
+                                  cfg.set_open_mode('w');
+                                  return cfg;
+                                }(),
+                                FileEventNotifier{}};
+  }
+
+  // The backup of the previous run is removed, the files that the sink does not write are kept
+  REQUIRE_FALSE(fs::exists(backup_1));
+  REQUIRE(testing::file_contains(testing::file_contents(stray_zero), "Stray_zero"));
+  REQUIRE(testing::file_contains(testing::file_contents(stray_zero_padded), "Stray_zero_padded"));
+  REQUIRE(testing::file_contains(testing::file_contents(stray_max), "Stray_max"));
+
+  for (fs::path const& file : {filename, stray_zero, stray_zero_padded, stray_max})
+  {
+    testing::remove_file(file);
+  }
+}
+
+/***/
+TEST_CASE("rotating_file_sink_date_append_ignores_files_with_an_index_it_does_not_write")
+{
+  // 2023-06-12 at midnight GMT
+  uint64_t const timestamp_20230612 = 1686528000000000000;
+
+  fs::path const filename = "rotating_file_sink_date_append_stray_index.log";
+  fs::path const backup_20230612 = "rotating_file_sink_date_append_stray_index.20230612.log";
+  fs::path const backup_20230612_1 = "rotating_file_sink_date_append_stray_index.20230612.1.log";
+  fs::path const backup_20230612_2 = "rotating_file_sink_date_append_stray_index.20230612.2.log";
+
+  // The first backup of a date has no index and the next ones are numbered from 1
+  fs::path const stray_zero = "rotating_file_sink_date_append_stray_index.20230612.0.log";
+  fs::path const stray_zero_padded = "rotating_file_sink_date_append_stray_index.20230612.01.log";
+
+  for (fs::path const& file :
+       {filename, backup_20230612, backup_20230612_1, backup_20230612_2, stray_zero, stray_zero_padded})
+  {
+    testing::remove_file(file);
+  }
+
+  // The files of a previous run and the stray files
+  testing::create_file(filename, "Previous_run");
+  testing::create_file(backup_20230612, "Previous_backup");
+  testing::create_file(stray_zero, "Stray_zero");
+  testing::create_file(stray_zero_padded, "Stray_zero_padded");
+
+  {
+    auto rfh = RotatingFileSink{
+      filename,
+      []()
+      {
+        RotatingFileSinkConfig cfg;
+        cfg.set_rotation_max_file_size(1024);
+        cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::Date);
+        cfg.set_timezone(Timezone::GmtTime);
+        cfg.set_open_mode('a');
+        return cfg;
+      }(),
+      FileEventNotifier{},
+      std::chrono::time_point<std::chrono::system_clock>(std::chrono::seconds(timestamp_20230612 / 1000000000))};
+
+    // Each record fills more than half of the size limit, so every record after the first rotates
+    auto write_record = [&rfh](std::string const& msg, uint64_t timestamp)
+    {
+      std::string formatted_log_statement{msg};
+      formatted_log_statement.append(600, 'x');
+      formatted_log_statement.push_back('\n');
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
+    };
+
+    for (size_t i = 0; i < 3; ++i)
+    {
+      write_record("Record_" + std::to_string(i), timestamp_20230612);
+    }
+  }
+
+  // The sink rotated twice
+  std::vector<std::string> const file_contents = testing::file_contents(filename);
+  REQUIRE_EQ(file_contents.size(), 1);
+  REQUIRE(testing::file_contains(file_contents, "Record_2"));
+
+  std::vector<std::string> const backup_contents = testing::file_contents(backup_20230612);
+  REQUIRE_EQ(backup_contents.size(), 1);
+  REQUIRE(testing::file_contains(backup_contents, "Record_1"));
+
+  std::vector<std::string> const backup_1_contents = testing::file_contents(backup_20230612_1);
+  REQUIRE(testing::file_contains(backup_1_contents, "Previous_run"));
+  REQUIRE(testing::file_contains(backup_1_contents, "Record_0"));
+
+  REQUIRE(testing::file_contains(testing::file_contents(backup_20230612_2), "Previous_backup"));
+
+  // and left the stray files as they were
+  REQUIRE(testing::file_contains(testing::file_contents(stray_zero), "Stray_zero"));
+  REQUIRE(testing::file_contains(testing::file_contents(stray_zero_padded), "Stray_zero_padded"));
+
+  for (fs::path const& file :
+       {filename, backup_20230612, backup_20230612_1, backup_20230612_2, stray_zero, stray_zero_padded})
+  {
+    testing::remove_file(file);
+  }
+}
+
+/***/
+TEST_CASE("rotating_file_sink_at_backup_limit_rotates_after_backup_is_removed_externally")
+{
+  fs::path const filename = "rotating_file_sink_backup_limit_removed_externally.log";
+  fs::path const backup{"rotating_file_sink_backup_limit_removed_externally.1.log"};
+  testing::remove_file(backup);
+
+  {
+    auto rfh = RotatingFileSink{filename,
+                                []()
+                                {
+                                  RotatingFileSinkConfig cfg;
+                                  cfg.set_rotation_max_file_size(1024);
+                                  cfg.set_max_backup_files(1);
+                                  cfg.set_overwrite_rolled_files(false);
+                                  cfg.set_open_mode('w');
+                                  return cfg;
+                                }(),
+                                FileEventNotifier{}};
+
+    auto write_record = [&rfh](std::string const& msg)
+    {
+      std::string formatted_log_statement{msg};
+      formatted_log_statement.append(600, 'x');
+      formatted_log_statement.push_back('\n');
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
+    };
+
+    write_record("Record_0");
+    write_record("Record_1");
+    REQUIRE(fs::exists(backup));
+
+    // The only allowed backup is removed, which frees the slot even with overwriting disabled
+    testing::remove_file(backup);
+
+    write_record("Record_2");
+    REQUIRE(fs::exists(backup));
+    REQUIRE_LE(fs::file_size(filename), 1024u);
+  }
+
+  std::vector<std::string> const file_contents = testing::file_contents(filename);
+  REQUIRE(testing::file_contains(file_contents, "Record_2"));
+  REQUIRE_EQ(file_contents.size(), 1);
+
+  testing::remove_file(filename);
+  testing::remove_file(backup);
+}
+
+/***/
+TEST_CASE("rotating_file_sink_at_backup_limit_recovers_after_failed_reopen")
+{
+#if !defined(QUILL_NO_EXCEPTIONS)
+  fs::path const filename = "rotating_file_sink_backup_limit_failed_reopen.log";
+  fs::path const backup{"rotating_file_sink_backup_limit_failed_reopen.1.log"};
+  testing::remove_file(backup);
+
+  {
+    // Only the reopen after the first rotation fails, e.g. a transient permission error
+    uint32_t opens{0};
+    FileEventNotifier notifier;
+    notifier.before_open = [&opens](fs::path const&)
+    {
+      if (++opens == 2)
+      {
+        throw std::runtime_error{"reopen fails"};
+      }
+    };
+
+    auto rfh = RotatingFileSink{filename,
+                                []()
+                                {
+                                  RotatingFileSinkConfig cfg;
+                                  cfg.set_rotation_max_file_size(1024);
+                                  cfg.set_max_backup_files(1);
+                                  cfg.set_overwrite_rolled_files(false);
+                                  cfg.set_open_mode('w');
+                                  return cfg;
+                                }(),
+                                notifier};
+
+    auto write_record = [&rfh](std::string const& msg, size_t padding = 600)
+    {
+      std::string formatted_log_statement{msg};
+      formatted_log_statement.append(padding, 'x');
+      formatted_log_statement.push_back('\n');
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
+    };
+
+    write_record("Record_0");
+    REQUIRE_THROWS(write_record("Record_1"));
+    REQUIRE(fs::exists(backup));
+
+    // The backup limit is reached, but the active file must still be reopened, also by records
+    // too short to reach the rotation threshold
+    write_record("Record_2", 0);
+  }
+
+  std::vector<std::string> const file_contents = testing::file_contents(filename);
+  REQUIRE(testing::file_contains(file_contents, "Record_2"));
+
+  testing::remove_file(filename);
+  testing::remove_file(backup);
+#endif
+}
+
+/***/
 TEST_CASE("time_rotation_initial_rotation_respects_interval_hours")
 {
   // Start at 2023-06-12 00:00:00 UTC
@@ -3427,10 +5393,21 @@ TEST_CASE("time_rotation_initial_rotation_respects_interval_hours")
       std::string formatted_log_statement;
       formatted_log_statement.append(s.data(), s.data() + s.size());
 
-      rfh.write_log(nullptr, timestamp, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
 
-      timestamp += std::chrono::nanoseconds(std::chrono::hours(1)).count();
+      timestamp += static_cast<uint64_t>(std::chrono::nanoseconds(std::chrono::hours(1)).count());
     }
 
     // Now write at +6h — this should trigger the first rotation
@@ -3439,8 +5416,19 @@ TEST_CASE("time_rotation_initial_rotation_respects_interval_hours")
       std::string formatted_log_statement;
       formatted_log_statement.append(s.data(), s.data() + s.size());
 
-      rfh.write_log(nullptr, timestamp, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -3493,10 +5481,21 @@ TEST_CASE("time_rotation_initial_rotation_respects_interval_minutes")
       std::string formatted_log_statement;
       formatted_log_statement.append(s.data(), s.data() + s.size());
 
-      rfh.write_log(nullptr, timestamp, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
 
-      timestamp += std::chrono::nanoseconds(std::chrono::minutes(1)).count();
+      timestamp += static_cast<uint64_t>(std::chrono::nanoseconds(std::chrono::minutes(1)).count());
     }
 
     // Now write at +5m — this should trigger the first rotation
@@ -3505,8 +5504,19 @@ TEST_CASE("time_rotation_initial_rotation_respects_interval_minutes")
       std::string formatted_log_statement;
       formatted_log_statement.append(s.data(), s.data() + s.size());
 
-      rfh.write_log(nullptr, timestamp, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     }
   }
 
@@ -3566,8 +5576,19 @@ TEST_CASE("time_rotation_interval_boundaries_stay_wall_clock_aligned")
     {
       std::string formatted_log_statement;
       formatted_log_statement.append(s.data(), s.data() + s.size());
-      rfh.write_log(nullptr, timestamp, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+      rfh.write_log(LogRecord{nullptr,
+                              timestamp,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
     };
 
     // Boundaries are aligned at +5m, +10m, +15m, ...
@@ -3692,8 +5713,19 @@ TEST_CASE("time_rotation_daily_at_time_rotating_file_sink_localtime_dst")
 
     auto write_record = [&rfh](uint64_t ts, std::string const& message)
     {
-      rfh.write_log(nullptr, ts, std::string_view{}, std::string_view{}, std::string{},
-                    std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", message);
+      rfh.write_log(LogRecord{nullptr,
+                              ts,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              message,
+                              {}});
     };
 
     write_record(before_rotation_timestamp, "Record [before rotation]");
@@ -3717,6 +5749,43 @@ TEST_CASE("time_rotation_daily_at_time_rotating_file_sink_localtime_dst")
   testing::remove_file(filename);
   testing::remove_file(filename_1);
   testing::remove_file(filename_2);
+
+  // Starting after the missing 02:30 on March 9 must still rotate at 02:30 on March 10.
+  fs::path const missing_hour_file = "daily_rotation_missing_hour.log";
+  fs::path const missing_hour_rolled = "daily_rotation_missing_hour.1.log";
+  auto local_timestamp = [](int day, int hour, int minute)
+  {
+    tm date{};
+    date.tm_year = 125;
+    date.tm_mon = 2;
+    date.tm_mday = day;
+    date.tm_hour = hour;
+    date.tm_min = minute;
+    date.tm_isdst = -1;
+    return static_cast<uint64_t>(std::mktime(&date)) * 1'000'000'000ull;
+  };
+  {
+    RotatingFileSinkConfig config;
+    config.set_open_mode('w');
+    config.set_rotation_time_daily("02:30");
+    config.set_timezone(Timezone::LocalTime);
+    auto const start = local_timestamp(9, 4, 0);
+    RotatingFileSink sink{
+      missing_hour_file, config, {}, std::chrono::system_clock::from_time_t(static_cast<time_t>(start / 1'000'000'000ull))};
+    auto write_record = [&sink](uint64_t timestamp)
+    {
+      sink.write_log(LogRecord{
+        nullptr, timestamp, {}, {}, {}, {}, LogLevel::Info, "INFO", "I", nullptr, "", "record\n", {}});
+      sink.flush_sink(SinkFlushReason::Explicit);
+    };
+    write_record(start);
+    write_record(local_timestamp(10, 2, 15));
+    CHECK_FALSE(fs::exists(missing_hour_rolled));
+    write_record(local_timestamp(10, 2, 45));
+    CHECK(fs::exists(missing_hour_rolled));
+  }
+  testing::remove_file(missing_hour_file);
+  testing::remove_file(missing_hour_rolled);
 
   #if defined(_WIN32)
   if (had_previous_tz)
@@ -3764,8 +5833,19 @@ TEST_CASE("rotating_file_sink_rotation_on_creation_enabled_write_mode")
     std::string formatted_log_statement;
     formatted_log_statement.append(s.data(), s.data() + s.size());
 
-    rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{}, std::string_view{},
-                  LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
   }
 
   REQUIRE(fs::exists(filename));
@@ -3789,8 +5869,19 @@ TEST_CASE("rotating_file_sink_rotation_on_creation_enabled_write_mode")
     std::string formatted_log_statement;
     formatted_log_statement.append(s.data(), s.data() + s.size());
 
-    rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{}, std::string_view{},
-                  LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
   }
 
   std::vector<std::string> const file_contents_1 = testing::file_contents(filename_1);
@@ -3832,8 +5923,19 @@ TEST_CASE("rotating_file_sink_rotation_on_creation_empty_file_does_not_rotate")
     std::string formatted_log_statement;
     formatted_log_statement.append(s.data(), s.data() + s.size());
 
-    rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{}, std::string_view{},
-                  LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
   }
 
   REQUIRE_FALSE(fs::exists(filename_1));
@@ -3908,8 +6010,19 @@ TEST_CASE(
     std::string formatted_log_statement;
     formatted_log_statement.append(s.data(), s.data() + s.size());
 
-    rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{}, std::string_view{},
-                  LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
   }
 
   REQUIRE_FALSE(fs::exists(filename_1));
@@ -3951,8 +6064,19 @@ TEST_CASE("rotating_file_sink_rotation_on_creation_with_date_naming_write_mode")
     std::string formatted_log_statement;
     formatted_log_statement.append(s.data(), s.data() + s.size());
 
-    rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{}, std::string_view{},
-                  LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
   }
 
   REQUIRE(fs::exists(filename));
@@ -3980,8 +6104,19 @@ TEST_CASE("rotating_file_sink_rotation_on_creation_with_date_naming_write_mode")
     std::string formatted_log_statement;
     formatted_log_statement.append(s.data(), s.data() + s.size());
 
-    rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{}, std::string_view{},
-                  LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
   }
 
   std::vector<std::string> const file_contents_1 = testing::file_contents(filename_dated);
@@ -4026,8 +6161,19 @@ TEST_CASE("rotating_file_sink_rotation_on_creation_with_dateandtime_naming_write
     std::string formatted_log_statement;
     formatted_log_statement.append(s.data(), s.data() + s.size());
 
-    rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{}, std::string_view{},
-                  LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
   }
 
   REQUIRE(fs::exists(filename));
@@ -4055,8 +6201,19 @@ TEST_CASE("rotating_file_sink_rotation_on_creation_with_dateandtime_naming_write
     std::string formatted_log_statement;
     formatted_log_statement.append(s.data(), s.data() + s.size());
 
-    rfh.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{}, std::string_view{},
-                  LogLevel::Info, "INFO", "I", nullptr, "", formatted_log_statement);
+    rfh.write_log(LogRecord{nullptr,
+                            0,
+                            std::string_view{},
+                            std::string_view{},
+                            std::string{},
+                            std::string_view{},
+                            LogLevel::Info,
+                            "INFO",
+                            "I",
+                            nullptr,
+                            "",
+                            formatted_log_statement,
+                            {}});
   }
 
   std::vector<std::string> const file_contents_1 = testing::file_contents(filename_dated);
@@ -4107,8 +6264,19 @@ TEST_CASE("rotating_file_sink_reopen_failure_does_not_crash")
 
   auto write = [&sink](std::string_view log_statement)
   {
-    sink.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                   std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", log_statement);
+    sink.write_log(LogRecord{nullptr,
+                             0,
+                             std::string_view{},
+                             std::string_view{},
+                             std::string{},
+                             std::string_view{},
+                             LogLevel::Info,
+                             "INFO",
+                             "I",
+                             nullptr,
+                             "",
+                             log_statement,
+                             {}});
   };
 
   write("Record [0]\n");
@@ -4164,7 +6332,7 @@ TEST_CASE("rotating_file_sink_directory_scan_failure_preserves_existing_backups"
 
   struct DirectoryCleanup
   {
-    explicit DirectoryCleanup(fs::path path) : path{std::move(path)} {}
+    explicit DirectoryCleanup(fs::path in_path) : path{std::move(in_path)} {}
     ~DirectoryCleanup()
     {
       restore_permissions();
@@ -4199,8 +6367,19 @@ TEST_CASE("rotating_file_sink_directory_scan_failure_preserves_existing_backups"
 
     RotatingFileSink sink{filename, cfg, FileEventNotifier{}};
     std::string const appended_record(64, 'B');
-    sink.write_log(nullptr, 0, std::string_view{}, std::string_view{}, std::string{},
-                   std::string_view{}, LogLevel::Info, "INFO", "I", nullptr, "", appended_record);
+    sink.write_log(LogRecord{nullptr,
+                             0,
+                             std::string_view{},
+                             std::string_view{},
+                             std::string{},
+                             std::string_view{},
+                             LogLevel::Info,
+                             "INFO",
+                             "I",
+                             nullptr,
+                             "",
+                             appended_record,
+                             {}});
   }
 
   directory_cleanup.restore_permissions();
@@ -4213,6 +6392,618 @@ TEST_CASE("rotating_file_sink_directory_scan_failure_preserves_existing_backups"
   REQUIRE_EQ(active_contents.size(), 1u);
   REQUIRE_EQ(active_contents[0], active_prefix + std::string(64, 'B'));
 #endif
+}
+
+TEST_CASE("rotating_file_sink_unicode_paths")
+{
+  fs::path const directory{u"rotating_file_sink_\u65e5\u672c"};
+  auto const start_time = std::chrono::system_clock::time_point{std::chrono::seconds{1583376945}};
+  using Naming = RotatingFileSinkConfig::RotationNamingScheme;
+
+  for (Naming const naming : {Naming::Index, Naming::Date, Naming::DateAndTime})
+  {
+    fs::path const filename = directory / fs::path{u"\u65e5\u672c_\u00e9.log"};
+    fs::path const backup = directory /
+      fs::path{naming == Naming::Index    ? u"\u65e5\u672c_\u00e9.1.log"
+                 : naming == Naming::Date ? u"\u65e5\u672c_\u00e9.20200305.log"
+                                          : u"\u65e5\u672c_\u00e9.20200305_025545.log"};
+
+    RotatingFileSinkConfig config;
+    config.set_timezone(Timezone::GmtTime);
+    config.set_rotation_naming_scheme(naming);
+    config.set_rotation_max_file_size(512);
+    config.set_max_backup_files(1);
+
+    auto write_record = [](RotatingFileSink& sink, char value)
+    {
+      sink.write_log(LogRecord{
+        nullptr, 1583376945000000000ull, {}, {}, {}, {}, LogLevel::Info, "INFO", "I", nullptr, {}, std::string(399, value) + '\n', {}});
+    };
+
+    {
+      RotatingFileSink sink{filename, config, {}, start_time};
+      write_record(sink, 'A');
+      write_record(sink, 'B');
+    }
+
+    REQUIRE(testing::file_contents(backup) == std::vector<std::string>{std::string(399, 'A')});
+
+    fs::path reopened_filename = filename;
+#if defined(__APPLE__)
+    fs::path const alias = directory / fs::path{u"\u65e5\u672c_e\u0301.log"};
+    REQUIRE(fs::equivalent(filename, alias));
+    reopened_filename = alias;
+#endif
+#if !defined(_WIN32)
+    fs::path const unrelated_symlink = directory / "unrelated.1.log";
+    std::error_code symlink_error;
+    fs::create_symlink(backup.filename(), unrelated_symlink, symlink_error);
+#endif
+
+    {
+      // Append-mode recovery must recognize the Unicode backup and enforce retention.
+      RotatingFileSink sink{reopened_filename, config, {}, start_time};
+      write_record(sink, 'C');
+    }
+
+    REQUIRE(testing::file_contents(backup) == std::vector<std::string>{std::string(399, 'B')});
+    REQUIRE(testing::file_contents(filename) == std::vector<std::string>{std::string(399, 'C')});
+
+#if !defined(_WIN32)
+    if (!symlink_error)
+    {
+      REQUIRE(fs::is_symlink(unrelated_symlink));
+      REQUIRE(fs::remove(unrelated_symlink));
+    }
+#endif
+    REQUIRE(fs::remove(filename));
+    REQUIRE(fs::remove(backup));
+    REQUIRE(fs::is_empty(directory));
+  }
+
+  REQUIRE(fs::remove(directory));
+}
+
+/***/
+TEST_CASE("rotating_file_sink_binary_records_rotate_by_size_after_the_file_header")
+{
+  fs::path const filename = "rotating_file_sink_binary_records.bin";
+  fs::path const filename_1 = "rotating_file_sink_binary_records.1.bin";
+  fs::path const filename_2 = "rotating_file_sink_binary_records.2.bin";
+  fs::path const filename_3 = "rotating_file_sink_binary_records.3.bin";
+
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+  testing::remove_file(filename_2);
+  testing::remove_file(filename_3);
+
+  // A header with bytes that a text file would not keep, such as the global header of a pcap file
+  std::string const file_header{
+    "\xd4\xc3\xb2\xa1\x02\x00\x04\x00\x00\x00\x00\x00"
+    "\x00\x00\x00\x00\xff\xff\x00\x00\x01\x00\x00\x00",
+    24};
+
+  // Two records fit in a file after its header, and the third rotates it
+  static constexpr size_t record_size{200};
+  std::vector<std::string> const records{
+    std::string(record_size, '\0'), std::string(record_size, '\n'), std::string(record_size, '\r'),
+    std::string(record_size, '\xff'), std::string(record_size, 'A')};
+
+  {
+    RotatingFileSinkConfig cfg;
+    cfg.set_rotation_max_file_size(512);
+    cfg.set_open_mode('w');
+    cfg.set_file_header(file_header);
+
+    RotatingFileSink sink{filename, cfg};
+
+    for (std::string const& record : records)
+    {
+      sink.write_binary(BinaryRecord{nullptr, 0, std::string_view{}, std::string_view{},
+                                     std::string_view{}, std::string_view{},
+                                     reinterpret_cast<std::byte const*>(record.data()), record.size()});
+    }
+  }
+
+  REQUIRE(read_file_bytes(filename_2) == file_header + records[0] + records[1]);
+  REQUIRE(read_file_bytes(filename_1) == file_header + records[2] + records[3]);
+  REQUIRE(read_file_bytes(filename) == file_header + records[4]);
+  REQUIRE_FALSE(fs::exists(filename_3));
+
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+  testing::remove_file(filename_2);
+}
+
+/***/
+TEST_CASE("rotating_file_sink_counts_the_frame_of_a_binary_record")
+{
+  fs::path const filename = "rotating_file_sink_binary_frames.bin";
+  fs::path const filename_1 = "rotating_file_sink_binary_frames.1.bin";
+  fs::path const filename_2 = "rotating_file_sink_binary_frames.2.bin";
+
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+  testing::remove_file(filename_2);
+
+  // Two records of 250 bytes fill 500 of the 512 bytes of a file. Their frames of 12 bytes take
+  // the rest, so the second record no longer fits and goes to the next file with its frame
+  std::string const record(250, 'r');
+  uint64_t const timestamp{7};
+
+  std::string frame{reinterpret_cast<char const*>(&timestamp), sizeof(timestamp)};
+  uint32_t const record_size{250};
+  frame.append(reinterpret_cast<char const*>(&record_size), sizeof(record_size));
+
+  {
+    RotatingFileSinkConfig cfg;
+    cfg.set_rotation_max_file_size(512);
+    cfg.set_open_mode('w');
+    cfg.set_binary_record_framing(BinaryRecordFraming::TimestampAndSize);
+
+    RotatingFileSink sink{filename, cfg};
+
+    for (size_t i = 0; i < 2; ++i)
+    {
+      sink.write_binary(BinaryRecord{nullptr, timestamp, std::string_view{}, std::string_view{},
+                                     std::string_view{}, std::string_view{},
+                                     reinterpret_cast<std::byte const*>(record.data()), record.size()});
+    }
+  }
+
+  REQUIRE(read_file_bytes(filename_1) == frame + record);
+  REQUIRE(read_file_bytes(filename) == frame + record);
+  REQUIRE_FALSE(fs::exists(filename_2));
+
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+}
+
+/***/
+TEST_CASE("rotating_json_file_sink_ignores_binary_records")
+{
+  fs::path const filename = "rotating_json_file_sink_ignores_binary_records.json";
+  fs::path const backup_filename = "rotating_json_file_sink_ignores_binary_records.1.json";
+  testing::remove_file(filename);
+  testing::remove_file(backup_filename);
+
+  MacroMetadata const macro_metadata{"file.cpp:1", "function",     "message",
+                                     nullptr,      LogLevel::Info, MacroMetadata::Event::Log};
+
+  static constexpr uint64_t start_timestamp = 1'686'528'000'000'000'000ull;
+  constexpr uint64_t one_minute_ns = 60'000'000'000ull;
+  auto const write_json_record = [&macro_metadata](RotatingJsonFileSink& sink)
+  {
+    sink.write_log(LogRecord{&macro_metadata,
+                             start_timestamp,
+                             "thread_id",
+                             std::string_view{},
+                             std::string{},
+                             "logger",
+                             LogLevel::Info,
+                             "INFO",
+                             "I",
+                             nullptr,
+                             "message",
+                             "",
+                             {}});
+  };
+
+  {
+    RotatingFileSinkConfig cfg;
+    cfg.set_open_mode('w');
+    cfg.set_rotation_max_file_size(512);
+    cfg.set_max_backup_files(1);
+    cfg.set_rotation_frequency_and_interval('m', 1);
+    cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::Index);
+
+    RotatingJsonFileSink sink{
+      filename, cfg, FileEventNotifier{},
+      std::chrono::system_clock::time_point{std::chrono::seconds{start_timestamp / 1'000'000'000u}}};
+
+    write_json_record(sink);
+
+    // The bytes of a binary record are not JSON: the sink writes nothing for it
+    std::string const binary_record(1024, '\0');
+    BinaryRecord record{nullptr,
+                        start_timestamp,
+                        {},
+                        {},
+                        {},
+                        {},
+                        reinterpret_cast<std::byte const*>(binary_record.data()),
+                        binary_record.size()};
+    sink.write_binary(record);
+    write_json_record(sink);
+
+    REQUIRE_FALSE(fs::exists(backup_filename));
+
+    record.timestamp += one_minute_ns;
+    sink.write_binary(record);
+  }
+
+  CHECK(testing::file_contents(filename).empty());
+  std::vector<std::string> const file_contents = testing::file_contents(backup_filename);
+  REQUIRE_EQ(file_contents.size(), 2);
+  REQUIRE_EQ(file_contents[0].front(), '{');
+  REQUIRE_EQ(file_contents[0].back(), '}');
+  REQUIRE_EQ(file_contents[0], file_contents[1]);
+
+  testing::remove_file(filename);
+  testing::remove_file(backup_filename);
+}
+
+/***/
+TEST_CASE("write_binary_passes_a_record_without_bytes_to_before_write")
+{
+  fs::path const filename = "write_binary_passes_a_record_without_bytes_to_before_write.bin";
+  testing::remove_file(filename);
+
+  {
+    RotatingFileSinkConfig cfg;
+    cfg.set_open_mode('w');
+    cfg.set_rotation_max_file_size(1024);
+
+    // The callback delimits every record, also one without bytes
+    FileEventNotifier file_event_notifier;
+    file_event_notifier.before_write = [](std::string_view bytes)
+    { return "<" + std::string{bytes} + ">"; };
+
+    RotatingFileSink sink{filename, cfg, file_event_notifier};
+
+    std::string const bytes{"record"};
+    sink.write_binary(BinaryRecord{nullptr, 0, std::string_view{}, std::string_view{},
+                                   std::string_view{}, std::string_view{},
+                                   reinterpret_cast<std::byte const*>(bytes.data()), bytes.size()});
+
+    sink.write_binary(BinaryRecord{nullptr, 0, std::string_view{}, std::string_view{},
+                                   std::string_view{}, std::string_view{}, nullptr, 0});
+  }
+
+  REQUIRE(read_file_bytes(filename) == "<record><>");
+
+  testing::remove_file(filename);
+}
+
+/***/
+TEST_CASE("write_binary_rotates_for_records_that_before_write_makes_larger")
+{
+  fs::path const filename = "write_binary_rotates_for_records_that_before_write_makes_larger.bin";
+  fs::path const filename_1 =
+    "write_binary_rotates_for_records_that_before_write_makes_larger.1.bin";
+  fs::path const filename_2 =
+    "write_binary_rotates_for_records_that_before_write_makes_larger.2.bin";
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+  testing::remove_file(filename_2);
+
+  {
+    RotatingFileSinkConfig cfg;
+    cfg.set_open_mode('w');
+    cfg.set_rotation_max_file_size(512);
+
+    // Each record is written as 300 bytes, also one without bytes of its own
+    FileEventNotifier file_event_notifier;
+    file_event_notifier.before_write = [](std::string_view) { return std::string(300, 'x'); };
+
+    RotatingFileSink sink{filename, cfg, file_event_notifier};
+
+    for (int i = 0; i < 4; ++i)
+    {
+      sink.write_binary(BinaryRecord{nullptr, 0, std::string_view{}, std::string_view{},
+                                     std::string_view{}, std::string_view{}, nullptr, 0});
+    }
+  }
+
+  // The size rotation estimates a record before before_write, so a file can exceed the limit by
+  // one record, as it can with log statements, and the next record rotates it
+  REQUIRE_EQ(fs::file_size(filename), 600u);
+  REQUIRE_EQ(fs::file_size(filename_1), 600u);
+  REQUIRE_FALSE(fs::exists(filename_2));
+
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+}
+
+/***/
+TEST_CASE("time_rotation_skipped_for_file_with_only_its_header")
+{
+  uint64_t const timestamp_20230612 = 1686528000000000000;
+  uint64_t const one_minute_ns = std::chrono::nanoseconds(std::chrono::minutes(1)).count();
+
+  fs::path const filename = "time_rotation_skipped_for_file_with_only_its_header.csv";
+
+  // Opened at 00:00, but the first record arrives at 00:10. Until then the file has only its
+  // header, so it is not rotated and its backup covers 00:10 onwards
+  fs::path const expected_backup =
+    "time_rotation_skipped_for_file_with_only_its_header.20230612_001000.csv";
+  fs::path const stale_backup =
+    "time_rotation_skipped_for_file_with_only_its_header.20230612_000000.csv";
+
+  testing::remove_file(filename);
+  testing::remove_file(expected_backup);
+  testing::remove_file(stale_backup);
+
+  {
+    RotatingFileSinkConfig cfg;
+    cfg.set_rotation_frequency_and_interval('m', 1);
+    cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::DateAndTime);
+    cfg.set_timezone(Timezone::GmtTime);
+    cfg.set_open_mode('w');
+    cfg.set_file_header("id,name\n");
+
+    RotatingFileSink sink{filename, cfg, FileEventNotifier{},
+                          std::chrono::time_point<std::chrono::system_clock>(
+                            std::chrono::seconds(timestamp_20230612 / 1000000000))};
+
+    write_log_statement(sink, timestamp_20230612 + 10 * one_minute_ns, "0,first\n");
+    write_log_statement(sink, timestamp_20230612 + 11 * one_minute_ns, "1,second\n");
+  }
+
+  REQUIRE_FALSE(fs::exists(stale_backup));
+  REQUIRE(read_file_bytes(expected_backup) == "id,name\n0,first\n");
+  REQUIRE(read_file_bytes(filename) == "id,name\n1,second\n");
+
+  testing::remove_file(filename);
+  testing::remove_file(expected_backup);
+  testing::remove_file(stale_backup);
+}
+
+/***/
+TEST_CASE("time_rotation_rotates_an_appended_file_smaller_than_its_header")
+{
+  uint64_t const timestamp_20230612 = 1686528000000000000;
+  uint64_t const one_minute_ns = std::chrono::nanoseconds(std::chrono::minutes(1)).count();
+
+  fs::path const filename = "time_rotation_rotates_an_appended_file_smaller_than_its_header.csv";
+
+  // The file that is appended to has content, although less than a header, and is rotated
+  fs::path const expected_backup =
+    "time_rotation_rotates_an_appended_file_smaller_than_its_header.20230612_000000.csv";
+
+  testing::remove_file(filename);
+  testing::remove_file(expected_backup);
+  testing::create_file(filename, "x");
+
+  {
+    RotatingFileSinkConfig cfg;
+    cfg.set_rotation_frequency_and_interval('m', 1);
+    cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::DateAndTime);
+    cfg.set_timezone(Timezone::GmtTime);
+    cfg.set_open_mode('a');
+    cfg.set_file_header("id,name\n");
+
+    RotatingFileSink sink{filename, cfg, FileEventNotifier{},
+                          std::chrono::time_point<std::chrono::system_clock>(
+                            std::chrono::seconds(timestamp_20230612 / 1000000000))};
+
+    // A file with content gets no header
+    REQUIRE(read_file_bytes(filename) == "x");
+
+    write_log_statement(sink, timestamp_20230612 + 10 * one_minute_ns, "0,first\n");
+  }
+
+  REQUIRE(read_file_bytes(expected_backup) == "x");
+  REQUIRE(read_file_bytes(filename) == "id,name\n0,first\n");
+
+  testing::remove_file(filename);
+  testing::remove_file(expected_backup);
+}
+
+/***/
+TEST_CASE("time_rotation_rotates_an_appended_file_of_the_size_of_its_header")
+{
+  uint64_t const timestamp_20230612 = 1686528000000000000;
+  uint64_t const one_minute_ns = std::chrono::nanoseconds(std::chrono::minutes(1)).count();
+
+  fs::path const filename = "time_rotation_rotates_an_appended_file_of_the_size_of_its_header.csv";
+
+  // The file that is appended to is as long as a header, but the sink did not write it: it has
+  // content of its own and is rotated
+  fs::path const expected_backup =
+    "time_rotation_rotates_an_appended_file_of_the_size_of_its_header.20230612_000000.csv";
+
+  testing::remove_file(filename);
+  testing::remove_file(expected_backup);
+  testing::create_file(filename, "OLD-DATA");
+
+  {
+    RotatingFileSinkConfig cfg;
+    cfg.set_rotation_frequency_and_interval('m', 1);
+    cfg.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::DateAndTime);
+    cfg.set_timezone(Timezone::GmtTime);
+    cfg.set_open_mode('a');
+    cfg.set_file_header("HEADER01");
+
+    RotatingFileSink sink{filename, cfg, FileEventNotifier{},
+                          std::chrono::time_point<std::chrono::system_clock>(
+                            std::chrono::seconds(timestamp_20230612 / 1000000000))};
+
+    write_log_statement(sink, timestamp_20230612 + 10 * one_minute_ns, "NEW");
+  }
+
+  REQUIRE(read_file_bytes(expected_backup) == "OLD-DATA");
+  REQUIRE(read_file_bytes(filename) == "HEADER01NEW");
+
+  testing::remove_file(filename);
+  testing::remove_file(expected_backup);
+}
+
+/***/
+TEST_CASE("rotation_on_creation_rotates_a_file_smaller_than_the_header")
+{
+  fs::path const filename = "rotation_on_creation_rotates_a_file_smaller_than_the_header.csv";
+  fs::path const filename_1 = "rotation_on_creation_rotates_a_file_smaller_than_the_header.1.csv";
+
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+  testing::create_file(filename, "x");
+
+  {
+    // Opening the file for writing would truncate it, so it is rotated first whatever its size
+    RotatingFileSinkConfig cfg;
+    cfg.set_rotation_max_file_size(1024);
+    cfg.set_rotation_on_creation(true);
+    cfg.set_open_mode('w');
+    cfg.set_file_header("id,name\n");
+
+    RotatingFileSink sink{filename, cfg};
+  }
+
+  REQUIRE(read_file_bytes(filename_1) == "x");
+  REQUIRE(read_file_bytes(filename) == "id,name\n");
+
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+}
+
+/***/
+TEST_CASE("rename_failure_reopens_the_file_without_another_header")
+{
+  fs::path const filename = "rename_failure_reopens_the_file_without_another_header.csv";
+  fs::path const filename_1 = "rename_failure_reopens_the_file_without_another_header.1.csv";
+
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+
+  // Each row fills more than half of the file, so the second one is due for a rotation
+  std::string const first_row = "0," + std::string(300, 'a') + "\n";
+  std::string const second_row = "1," + std::string(300, 'b') + "\n";
+
+  {
+    RotatingFileSinkConfig cfg;
+    cfg.set_rotation_max_file_size(512);
+    cfg.set_open_mode('w');
+    cfg.set_file_header("id,name\n");
+
+    FailingRenameRotatingFileSink sink{filename, cfg};
+
+    write_log_statement(sink, 0, first_row);
+
+    // The rotation cannot rename the file and opens it again to append to it. It has content,
+    // so the header is not written in the middle of it
+    write_log_statement(sink, 0, second_row);
+  }
+
+  REQUIRE_FALSE(fs::exists(filename_1));
+  REQUIRE(read_file_bytes(filename) == "id,name\n" + first_row + second_row);
+
+  testing::remove_file(filename);
+}
+
+/***/
+TEST_CASE("size_rotation_counts_what_after_open_writes_to_a_new_file")
+{
+  fs::path const filename = "size_rotation_counts_what_after_open_writes.log";
+  fs::path const filename_1 = "size_rotation_counts_what_after_open_writes.1.log";
+  fs::path const filename_2 = "size_rotation_counts_what_after_open_writes.2.log";
+
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+  testing::remove_file(filename_2);
+
+  // The callback writes a preamble of 240 bytes to every file it is opened for. It is called
+  // before the sink writes the header, so the preamble comes first
+  std::string const preamble(240, 'p');
+
+  FileEventNotifier file_event_notifier;
+  file_event_notifier.after_open = [&preamble](fs::path const&, FileEventNotifierHandle file)
+  {
+#if defined(_WIN32)
+    DWORD bytes_written{0};
+    REQUIRE(::WriteFile(file, preamble.data(), static_cast<DWORD>(preamble.size()), &bytes_written, nullptr));
+#else
+    StreamSink::safe_fwrite(preamble.data(), sizeof(char), preamble.size(), file);
+#endif
+  };
+
+  std::string const record(110, 'r');
+
+  {
+    RotatingFileSinkConfig cfg;
+    cfg.set_rotation_max_file_size(512);
+    cfg.set_open_mode('w');
+    cfg.set_file_header("HEAD");
+
+    RotatingFileSink sink{filename, cfg, file_event_notifier};
+
+    // Two records fit in a file of 512 bytes after the 244 bytes that it starts with
+    for (size_t i = 0; i < 5; ++i)
+    {
+      write_log_statement(sink, 0, record);
+    }
+  }
+
+  REQUIRE(read_file_bytes(filename_2) == preamble + "HEAD" + record + record);
+  REQUIRE(read_file_bytes(filename_1) == preamble + "HEAD" + record + record);
+  REQUIRE(read_file_bytes(filename) == preamble + "HEAD" + record);
+
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+  testing::remove_file(filename_2);
+}
+
+/***/
+TEST_CASE("rotating_file_sink_size_rotation_with_the_write_buffer_disabled")
+{
+  fs::path const filename = "rotating_file_sink_write_buffer_disabled.log";
+  fs::path const filename_1 = "rotating_file_sink_write_buffer_disabled.1.log";
+  fs::path const filename_2 = "rotating_file_sink_write_buffer_disabled.2.log";
+
+  {
+    auto rfh = RotatingFileSink{filename,
+                                []()
+                                {
+                                  RotatingFileSinkConfig cfg;
+                                  cfg.set_rotation_max_file_size(1024);
+                                  cfg.set_open_mode('w');
+
+                                  // Every record goes through the handle of the file
+                                  cfg.set_write_buffer_size(0);
+                                  return cfg;
+                                }(),
+                                FileEventNotifier{}};
+
+    // Two records fit in a file, so the third and the fifth one rotate it
+    for (size_t i = 0; i < 5; ++i)
+    {
+      std::string formatted_log_statement{"Record [" + std::to_string(i) + "]"};
+      formatted_log_statement.resize(400, '.');
+      formatted_log_statement.push_back('\n');
+
+      rfh.write_log(LogRecord{nullptr,
+                              0,
+                              std::string_view{},
+                              std::string_view{},
+                              std::string{},
+                              std::string_view{},
+                              LogLevel::Info,
+                              "INFO",
+                              "I",
+                              nullptr,
+                              "",
+                              formatted_log_statement,
+                              {}});
+    }
+  }
+
+  std::vector<std::string> const file_contents = testing::file_contents(filename);
+  REQUIRE_EQ(file_contents.size(), 1);
+  REQUIRE_EQ(testing::file_contains(file_contents, "Record [4]"), true);
+
+  std::vector<std::string> const file_contents_1 = testing::file_contents(filename_1);
+  REQUIRE_EQ(file_contents_1.size(), 2);
+  REQUIRE_EQ(testing::file_contains(file_contents_1, "Record [2]"), true);
+  REQUIRE_EQ(testing::file_contains(file_contents_1, "Record [3]"), true);
+
+  std::vector<std::string> const file_contents_2 = testing::file_contents(filename_2);
+  REQUIRE_EQ(file_contents_2.size(), 2);
+  REQUIRE_EQ(testing::file_contains(file_contents_2, "Record [0]"), true);
+  REQUIRE_EQ(testing::file_contains(file_contents_2, "Record [1]"), true);
+
+  testing::remove_file(filename);
+  testing::remove_file(filename_1);
+  testing::remove_file(filename_2);
 }
 
 TEST_SUITE_END();

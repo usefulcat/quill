@@ -20,7 +20,7 @@ namespace
 class TestUserClockSource : public UserClockSource
 {
 public:
-  uint64_t now() const override { return _timestamp.load(std::memory_order_relaxed); }
+  uint64_t now() const noexcept override { return _timestamp.load(std::memory_order_relaxed); }
 
   void set_timestamp(std::chrono::nanoseconds timestamp)
   {
@@ -47,7 +47,7 @@ Logger* create_user_clock_file_logger(std::string const& logger_name, char const
   return Frontend::create_or_get_logger(
     logger_name, std::move(file_sink),
     PatternFormatterOptions{"%(time) %(log_level) %(message)", "%Y-%m-%d %H:%M:%S.%Qns", Timezone::GmtTime, false},
-    ClockSourceType::User, &user_clock);
+    ClockSource::custom(user_clock));
 }
 } // namespace
 

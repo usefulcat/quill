@@ -1,3 +1,6 @@
+- [Unreleased](#unreleased)
+- [v14.0.0](#v1400)
+- [v13.1.0](#v1310)
 - [v13.0.0](#v1300)
 - [v12.2.2](#v1222)
 - [v12.2.1](#v1221)
@@ -102,11 +105,350 @@
 - [v1.1.0](#v110)
 - [v1.0.0](#v100)
 
+## Unreleased
+
+## v14.0.0
+
+### Breaking Changes
+
+- Logger creation now takes `ClockSource::tsc()`, `ClockSource::system()`, or
+  `ClockSource::custom(clock)` instead of the previous clock-source enum and optional pointer.
+- `UserClockSource::now()` is now `noexcept`. Add `noexcept` to existing overrides and keep them
+  free of Quill logging calls, since they run while a record occupies the calling thread's queue.
+- Custom frontend options must derive from `quill::FrontendOptions`, so options added in later
+  versions are inherited instead of failing to compile.
+- `Sink::write_log()`, `Sink::write_metric()`, `Filter::filter()` and
+  `JsonSink::generate_json_message()` now take a single `LogRecord` or `MetricRecord`, and sinks
+  implement one `flush_sink(SinkFlushReason)`, so future record fields will not break custom sinks
+  and filters again.
+- Custom codecs use `quill::SizeCacheVector` instead of `quill::detail::SizeCacheVector`, whose
+  `assign()` is removed; no Quill codec used it.
+- `FileSinkConfig::set_open_mode()` throws `QuillError` for modes other than `"a"` and `"w"` (or
+  `"ab"` and `"wb"`), which previously failed to open on POSIX or, for `"r+"` on Windows, overwrote
+  the file from its start.
+- The protected `FileSink` helpers `format_datetime_string()` and `append_datetime_to_filename()`
+  are now free functions in `quill::detail`, and `extract_stem_and_extension()` is removed; use
+  `path.parent_path() / path.stem()` and `path.extension()` instead.
+- The protected `JsonSink::_append_json_escaped()` is renamed to `append_json_escaped()`.
+- Removed `ConsoleSinkConfig::Colours::set_colours_enabled()` and `colours_enabled()`, which had no
+  effect, and `PrometheusSink::Options`, which no constructor accepted. Use
+  `ConsoleSinkConfig::set_colour_mode()` to disable colours.
+- `LoggerBase::mark_invalid()` is now protected; remove loggers with `Frontend::remove_logger()` or
+  `Frontend::remove_logger_blocking()`. The unused macros `QUILL_CPLUSPLUS`, `QUILL_HAS_INCLUDE`,
+  `QUILL_HAS_CPP_ATTRIBUTE` and `QUILL_MAGIC_SEPARATOR` are removed.
+- Quill now requires the standard `<filesystem>` header, so GCC 8 is the oldest supported GCC. The
+  `<experimental/filesystem>` fallback for GCC 7 is removed; it no longer compiled.
+- `loglevel_from_string()` is renamed to `log_level_from_string()`.
+
+### API and Behaviour Changes
+
+- Compile-time immediate-flush control is now `FrontendOptions::enable_immediate_flush`
+  (default `true`), replacing the preprocessor setting for both logging APIs. CSV and signal-handler
+  messages follow the logger's flush policy.
+- `Frontend::create_sink<TSink>()` and `Frontend::create_or_get_sink<TSink>()` return
+  `std::shared_ptr<TSink>`, so configuring the created sink no longer needs a cast. Code that
+  relied on both returning `std::shared_ptr<Sink>`, such as a conditional expression that selects
+  between two sink types, needs an explicit conversion.
+- `quill/std/Atomic.h` no longer includes `quill/bundled/fmt/format.h` and
+  `quill/bundled/fmt/std.h`; include them directly if your code relied on that.
+- Creating loggers whose `FrontendOptions` values differ now throws `QuillError`, as does passing a
+  different options type to `Backend::start<TFrontendOptions>()` with `SignalHandlerOptions` or, on
+  Windows, to `init_signal_handler<TFrontendOptions>()`; mixing queue types previously crashed on
+  the first log call from a thread that used both loggers.
+- An unbounded queue that cannot grow because memory is exhausted now blocks or drops the message
+  like a full queue, instead of throwing from the `LOG_*` call. A message or MDC update too large
+  for the current queue is dropped in that case and reported separately through
+  `BackendOptions::error_notifier`.
+- A custom `BackendOptions::check_printable_char` is now called once per byte value when the backend
+  starts instead of once per character, so it must depend only on its argument.
+- Logger patterns with a `}` inside an attribute's format spec, such as `%(logger:})`, are now
+  rejected as an invalid format specifier instead of printing a literal `}`; put the `}` after the
+  attribute.
+- On POSIX, with the built-in signal handler, Ctrl-C and `SIGTERM` still flush the logs but now
+  terminate the process by the signal, so shell loops and supervisors see the interruption. As PID 1
+  of a container, where the kernel ignores that signal, the process exits with status
+  `128 + signal`.
+- `SIGBUS` is now one of the default `SignalHandlerOptions::catchable_signals`.
+- `Backend::stop()` restores the signal handlers installed before `Backend::start()` instead of
+  resetting them to the default.
+- File sinks on POSIX create files with permissions from the process umask, as `fopen()` does,
+  instead of always 0644.
+- `CsvWriter` writes the header of a file through `FileSinkConfig::set_file_header()`. With a
+  `RotatingFileSinkConfig`, the header counts towards `rotation_max_file_size` in every file. Time
+  rotation skips a file whose only content is the header written during the current open. Reopening
+  a file after a failed rotation preserves its existing header.
+- A `CsvWriter` with `should_write_header=true` throws `QuillError` when the file already has a
+  sink that does not write that header, e.g. the one of a writer with `should_write_header=false`:
+  only the sink can start every file it opens with the header. Create the writer that writes the
+  header first.
+- `CsvWriter(filename)` appends to the file by default, as `BinaryWriter` and `PcapWriter` do,
+  instead of truncating it: a new file gets the header, and a file that has rows keeps them. Pass
+  `'w'` as the open mode to truncate the file.
+- `SignalHandlerOptions::excluded_logger_substrings` also excludes the loggers of `BinaryWriter`
+  and `PcapWriter` by default, so the signal handler does not write its messages to their files.
+- On Linux and macOS a `FileSink` keeps the records in a write buffer of its own, as it does on
+  Windows, so calling `setvbuf()` on the `FILE*` in `FileEventNotifier::after_open` no longer
+  changes how records are buffered. `FileSinkConfig::set_write_buffer_size()` sizes the buffer.
+- `FileSinkConfig::set_write_buffer_size(0)` disables the write buffer of a `FileSink` on every
+  platform: each record is written through the handle that the `FileEventNotifier` callbacks
+  receive, for an application that configures that handle itself or keeps it. On Windows `0`
+  selected the default size before.
+- When a write to the file fails, e.g. on a full disk, a `FileSink` keeps the records that are in
+  its write buffer and writes them once a later write succeeds, where the C library could discard
+  them on Linux and macOS. A `RotatingFileSink` that rotates the file in the meantime drops them.
+- When regular output records arrive out of timestamp order, `BackendOptions::error_notifier`
+  suggests a larger `log_timestamp_ordering_grace_period` for delayed publishers. It repeats the
+  advice only when the estimate increases.
+- Logging and metric calls now timestamp records immediately before publishing them. A call that
+  copies a large payload or waits for queue space records the time after that work completes.
+
+### New Features
+
+- Added `FrontendOptions::clock_type`, defaulting to `ClockSource` for runtime selection, with
+  support for user-clock implementation types to inline timestamp reads.
+  ([#1009](https://github.com/odygrd/quill/issues/1009))
+- Added `std::filesystem::path` overloads of `Frontend::create_sink<TSink>()` and
+  `Frontend::create_or_get_sink<TSink>()` for file sinks, so Windows applications can log to paths
+  with characters outside the active code page. ([#354](https://github.com/odygrd/quill/issues/354))
+- Added `PatternFormatter::format(LogRecord const&)` for custom sinks that format records.
+- Added `quill::MemberwiseCodec<T, &T::a, &T::b>`, which generates a codec from a list of data
+  members.
+- Added `QUILL_VERSION`, `QUILL_VERSION_MAJOR`, `QUILL_VERSION_MINOR` and `QUILL_VERSION_PATCH`.
+- Added `LOG_BINARY(logger, data, size)` and `Logger::log_binary()`, which write bytes to the sinks
+  of a logger as they are, e.g. to record a market data feed to a `FileSink` or `RotatingFileSink`.
+  Custom sinks receive the bytes in the new `Sink::write_binary(BinaryRecord const&)`.
+- Added `quill::BinaryWriter`, which creates the file sink and the logger of a binary file, so that
+  a record is written with `writer.write(data, size)`. It takes a `FileSinkConfig`, a
+  `RotatingFileSinkConfig`, or one or several custom sinks.
+- Added `FileSinkConfig::set_binary_record_framing()`, which makes a file sink write the size of
+  each binary record, or its timestamp and size, before its bytes, so that a reader can tell
+  records of different sizes apart.
+- Added `quill::PcapWriter`, which writes network packets to pcap files that Wireshark and tcpdump
+  read: `writer.write_packet(packet, size, timestamp_ns)`. With a `RotatingFileSinkConfig` each
+  file is a capture that can be read on its own.
+- Added `FileSinkConfig::set_file_header()`, which starts every file of a `FileSink` or
+  `RotatingFileSink` with the given bytes, including each file created by a rotation, e.g. a csv
+  header row or the global header of a pcap file.
+- Added `FileSink::config()`, which returns the `FileSinkConfig` that the sink was created with.
+- The `CsvWriter` constructors take the clock of the writer as a last argument, so a writer can be
+  created with frontend options that have a `clock_type`.
+- `BackendOptions` is an aggregate in every language standard, so C++20 designated initializers
+  such as `BackendOptions{.thread_name = "backend"}` compile.
+- Updated bundled `libfmt` to `v12.2.1`
+
+### Performance
+
+- Improved backend worker throughput: about 20% more log statements per second on Linux and 35% more
+  on Windows with `FileSink` and a typical pattern, 75% more with `JsonFileSink`, and twice as many
+  with `JsonFileSink` and named arguments. On Windows the gain is about 70% when an application
+  mixes many different log statements.
+- The backend worker processes records of the macro-free logging functions faster: about 10% more
+  log statements per second on Linux, and 45% more on Windows with source files compiled with long
+  paths, such as the absolute paths that CMake passes.
+- On Windows, `FileSink` now uses a 256 KiB write buffer by default instead of 64 KiB, as each write
+  to a file costs more there. `FileSinkConfig::set_write_buffer_size()` sets another size.
+- On Linux the backend writes a further 5% more log statements per second to a `FileSink` with a
+  typical pattern.
+- With the default `check_printable_char`, the backend spends about 30% less time on messages with
+  string arguments, and the TSC clock calibrates in 10 ms instead of busy-spinning for 50 ms.
+- Growing an unbounded queue no longer stalls the logging thread to pre-fault the new memory, and
+  rotation no longer fsyncs the file when fsync is disabled.
+- Reduced overhead for System/User clocks.
+
+### Bug Fixes
+
+- The signal handler flushes the sinks of an application whose only loggers are those of
+  `CsvWriter`s, which it does not log its messages to. Before, the rows that were not yet flushed
+  were lost on `SIGINT`, `SIGTERM` or a crash.
+- `Frontend::preallocate()` can be called again by a thread that has already logged, e.g. at the
+  start of each job of a thread pool. With an unbounded queue it read memory that the backend
+  thread could be freeing.
+- With `HugePagesPolicy::Always` or `Try`, a queue of 1 MiB or more no longer requests one huge page
+  too many, so a hugetlb pool sized from the queue capacity is enough.
+- Logging more than 12 C strings in one statement, or a container of them, now throws
+  `std::bad_alloc` from the log call when the size cache cannot allocate, instead of calling
+  `std::terminate()`.
+- A transient allocation failure in the backend is reported through `error_notifier` and retried,
+  instead of terminating the process, logging a record with duplicated arguments or disabling a
+  sink's filters. `%(mdc)` also keeps its previous value instead of a truncated one.
+- `BackendOptions::sleep_duration = std::chrono::nanoseconds::max()` now sleeps until
+  `Backend::notify()` wakes the backend, instead of busy-spinning.
+- With the TSC clock, timestamps keep following the system clock on hosts where reading it is
+  slow, and drift less between resyncs.
+- With `SignalHandlerOptions::timeout_seconds = 0`, `Backend::start()` leaves the application's
+  `SIGALRM` handler installed.
+- With the built-in signal handler, a second handled signal on the thread that is already handling
+  one, such as `SIGINT` during `SIGTERM`, no longer stalls the shutdown until the handler timeout.
+- On Windows, an unhandled-exception filter installed before `Backend::start()`, such as a crash
+  reporter, runs again after Quill's filter.
+- Format strings that combine a dynamic width or precision with named arguments, such as
+  `"{:{}} {unit}"`, no longer fail with "argument not found".
+- Arguments beyond the named fields of a format string get unique keys in `LogRecord::named_args`
+  and JSON output: `LOG_INFO(logger, "{_1}", 31, 42)` no longer emits the key `_1` twice.
+- Timestamp patterns with flagged time specifiers such as `%-H` or `%_M` now print the current time
+  instead of a stale cached one, and patterns with `%X` or `%c` are accepted instead of throwing
+  `QuillError`. They are formatted with `strftime()`, which `BackendOptions::error_notifier`
+  reports once.
+- MSVC builds report a formatting error for a timestamp or file name pattern with a specifier the C
+  runtime does not support, such as `%-H`, instead of terminating the process.
+- On macOS, `%(thread_name)` now shows thread names longer than 15 characters in full instead of
+  only their first 15 characters.
+- A type using `DirectFormatCodec` is formatted once per log statement instead of twice, so a
+  formatter that reads concurrently changing state can no longer log truncated or stale text.
+- A type with a `std::initializer_list` constructor, such as `nlohmann::json`, logged through
+  `DeferredFormatCodec` or inside a `std::array` is no longer wrapped in a one-element list on GCC.
+- `decode_members()` can assign `std::variant` members whose alternatives are not strings, and on
+  Windows a `std::tuple` or `std::variant` holding a wide string can be logged; both previously
+  failed to compile.
+- `Frontend::create_or_get_sink()` no longer opens a second `FileSink` on the same file, truncating
+  it in `"w"` mode, when the path is a symlink whose target the first sink created.
+- On Windows, `Frontend::create_or_get_sink<FileSink>()` returns the existing sink for another
+  spelling of the same file, such as `app.log.` or, in MinGW builds, a directory differing only in
+  letter case, instead of opening the file again, which could truncate it in `w` mode.
+- In `QUILL_NO_EXCEPTIONS` builds, `Frontend::get_sink()` no longer aborts for a sink name that is
+  not a valid file path, such as `"tcp://collector:4317"`.
+- `FileSink` with `minimum_fsync_interval` now performs a skipped fsync once the interval elapses
+  and on the final flush, so the last records are synced, including the first fsync on a system up
+  for less than the interval.
+- A missing log directory no longer stalls the backend for 400 ms on every flush while `FileSink`
+  retries opening the file.
+- `RotatingSink` keeps rotating after a backup file is deleted or compressed outside Quill, instead
+  of letting the active file grow without limit.
+- `RotatingSink` ignores a file named with index zero or a zero-padded index, e.g. `app.0.log` or
+  `app.01.log` next to `app.log`, which it never writes. Before, such a file stopped rotation in
+  append mode and was deleted by `remove_old_files`.
+- `RotatingSink` in append mode no longer takes a directory named like one of its backups, e.g.
+  `app.1.log`, for a backup, which the next rotation renamed.
+- With `RotationNamingScheme::Date` or `DateAndTime`, `RotatingSink` names the first backup after
+  its first record, like every later backup, instead of after the sink's creation, so a sparse
+  logger's first backup no longer carries the date it was created on.
+- With `RotationNamingScheme::DateAndTime`, a restart within the same second no longer overwrites the
+  previous run's backup, and the newest backup keeps the unnumbered name.
+- A time-based rotation that fails, e.g. on a transient rename error, is retried after one second
+  instead of at the next scheduled rotation.
+- `RotatingFileSinkConfig::set_rotation_time_daily()` no longer switches the configuration to daily
+  rotation when it throws for an invalid time.
+- `RotatingFileSink` counts what `FileEventNotifier::after_open` writes to a new file towards
+  `rotation_max_file_size`. Before, each file after a rotation could exceed the limit by those
+  bytes.
+- Closing one `CsvWriter` no longer breaks another `CsvWriter` with a different schema that writes to
+  the same file, or one with the same name created in another shared library.
+- `PrometheusSink::register_histogram()` and `register_histogram_family()` reject unsorted bucket
+  boundaries before creating any state, so registering again with corrected buckets works instead
+  of dropping samples or failing every publish.
+- Fixed MSVC named module builds with `QUILL_IMPORT_STD=ON` failing with standard library
+  redefinition errors or internal compiler errors. ([#1012](https://github.com/odygrd/quill/issues/1012))
+- CMake consumers using MSVCRT-based MinGW no longer link against UCRT through `quill::quill`,
+  avoiding crashes when memory is allocated and freed across incompatible C runtimes.
+- Fixed a DragonFlyBSD build error with `QUILL_USE_SEQUENTIAL_THREAD_ID`.
+- Various Windows fixes for MSVC and MinGW builds, mostly in file sinks, rotation and timestamps.
+- Various other fixes and performance improvements.
+
+## v13.1.0
+
+- Added `Logger::publish_dynamic_metric()` and `DYNAMIC_METRIC()` for runtime labels, sharing
+  `PrometheusSink` series with pointer publishing; existing registrations configure both APIs.
+- Added `PrometheusSink::register_*_family()` to configure a metric family without creating a series.
+  Use `register_*_family()` when there is no initial metadata pointer to register.
+- Added the opt-in `QUILL_IMPORT_STD` option for named module builds on toolchains supporting
+  `import std`; standard library headers remain the default.
+- Added the `--@quill//:std_module` Bazel flag to configure the standard library module target
+  for `quill_module`, automatically enabling `QUILL_IMPORT_STD`.
+- CMake and Bazel module targets now define `QUILL_USE_MODULE` automatically for consumers, while
+  retaining compatibility with an explicit `#define QUILL_USE_MODULE` in source code.
+- Uncaught exceptions from `Frontend` logger creation and sink lookup or creation no longer leave
+  manager locks held, allowing crash handlers to look up loggers and flush pending logs.
+- Added direct logging of arithmetic `std::atomic<T>` values via `quill/std/Atomic.h`, capturing each
+  value on the calling thread.
+- Added the experimental `quill_module` target for Bazel 9+ consumers using C++20 and
+  `--experimental_cpp_modules`, while preserving ordinary header-only builds on older Bazel versions.
+- Fixed C++20 module imports using separate logger state across translation units, which could
+  prevent logger lookup and crash automatic backend shutdown.
+- CMake, Meson, and Bazel consumers can use a separate `fmtquill` dependency for the bundled
+  formatter without inheriting Quill's logging compile options, definitions, or link dependencies.
+- Fixed `FileSink::open_file()` retaining the old filename when a subclass reopens a different path,
+  which could redirect later logs back to the original file.
+- `FileSink` now accepts custom filename timestamp formats that expand to an empty string, such as
+  `%p` in locales without AM/PM markers.
+- `StreamSink` can retry signal-interrupted writes to streams configured with `_IONBF` by passing
+  `stream_is_unbuffered=true` to its constructor; short writes on buffered streams still report errors.
+- Loggers using `ClockSourceType::System` no longer stall behind the timestamp-ordering grace check
+  after a backward wall-clock correction.
+- `RotatingFileSink` now recognizes existing backup filename aliases during startup, preserving
+  append-mode backups when the base filename spelling changes on a case- or normalization-insensitive
+  filesystem.
+- On POSIX, `Frontend::create_or_get_sink<FileSink>()` now resolves existing file aliases, preventing
+  duplicate sinks from truncating or reordering output to the same log file.
+- `Backend` now retries thread discovery after a caught allocation failure, allowing a newly registered
+  thread's pending logs to be processed.
+- Fixed `FileSink` recovery after a deleted-file close callback throws, allowing later flushes to reopen
+  the log.
+- `%(process_id)` now contains the process ID when records are processed by `ManualBackendWorker`.
+- With a dropping queue, `Logger::flush_log()` now reports outstanding drops through
+  `BackendOptions::error_notifier` even when the thread that dropped the messages has exited.
+- `Backend::stop()` now processes records logged by `FileEventNotifier::before_close` or
+  `FileEventNotifier::after_close` while destroying removed loggers' sinks. This applies when
+  `BackendOptions::wait_for_queues_to_empty_before_exit` is enabled.
+- On Windows, `Frontend::create_or_get_sink<FileSink>()` now reuses an existing sink for equivalent casing or
+  `\\?\` spellings of the same path. In `'w'` mode, this prevents a second sink from reopening and truncating
+  that file.
+- Fixed `FileSink` failing to open long Windows paths supplied with a `\\?\` prefix.
+- On Windows, timestamp suffixes enabled by `FileSinkConfig::set_filename_append_option()` now preserve
+  Unicode `fs::path` names outside the active code page. `RotatingFileSink` also preserves these names during
+  rotation and backup discovery.
+- Logging from an executable's `BackendOptions::error_notifier` no longer blocks with
+  `Logger::set_immediate_flush()` enabled when Quill's backend runs in a Windows DLL.
+- With shutdown draining enabled, `Backend::stop()` now processes records logged by
+  `BackendOptions::error_notifier` when `Sink::flush_sink()` fails at shutdown. Further error notifications
+  while processing those records go directly to stderr.
+- After `Backend::stop()` followed by `Backend::start(new_options)`, existing threads now format their MDC
+  fields using the new `BackendOptions::mdc_format_pattern`.
+- On Windows, text written by `FileEventNotifier::after_open` now goes to the end of the file in append mode.
+  `FileEventNotifier::before_close` now runs after pending `FileSink` writes have been flushed.
+- `FileSink` now releases its Windows file handle even when a buffered write fails during destruction.
+- `PrometheusSink::unregister_metric()` now allows a metric to be registered again with updated help text or a
+  different type after the last metric with that name is removed.
+- Fixed an assertion when logging threads exit concurrently in debug builds or builds with
+  `QUILL_ENABLE_ASSERTIONS` enabled.
+- `Frontend::remove_logger_blocking()` now flushes its sinks before returning even if the caller retains a
+  `std::shared_ptr<Sink>`. Removal no longer loops when repeated `Sink::flush_sink()` failures trigger
+  `BackendOptions::error_notifier` to log through another logger.
+- With `Timezone::LocalTime`, `RotatingFileSink` now returns to the time set by
+  `RotatingFileSinkConfig::set_rotation_time_daily()` on following days if a daylight-saving change skips the
+  scheduled time.
+- `LOG_INFO` with `"{amount:.{precision}f} {currency}"` now maps `currency` to the currency argument in JSON
+  and `%(named_args)` output. It previously used the precision argument.
+- `FileSink::flush_sink()` now retries a failed reopen after an external deletion, allowing logging to resume
+  if the directory becomes available again. On Windows, this also handles files marked for deletion while the
+  sink's handle is still open.
+- `LOG_INFO(logger, "{}", std::tie(symbol))` now handles a referenced `char[N]` without a null terminator
+  using its array length.
+- When `Codec<T>` uses `DeferredFormatCodec<T>`, logging `std::tie(object)` or a temporary pair containing
+  lvalue references no longer moves from those referenced objects.
+- On Linux/macOS, `SignalHandlerOptions::timeout_seconds` now works when the alarm interrupts the thread
+  already handling the signal during a stalled flush. The original signal's default termination and core-dump
+  behavior is preserved.
+- `Logger::set_mdc()` and `Logger::erase_mdc()` now reject requests larger than a `QueueType::BoundedDropping`
+  queue rather than retrying indefinitely. Application threads still retry when the request fits but the queue
+  is temporarily full.
+- Fixed `DeferredFormatCodec` types that also convert implicitly to `std::string`, such as `nlohmann::json`,
+  bypassing their formatter on the backend; the conversion was logged instead, or a throwing conversion produced
+  "[Quill deferred decode failed]" (aborting in `QUILL_NO_EXCEPTIONS` builds).
+
 ## v13.0.0
 
 - Added `quill::log()` to macro-free mode for logging with a runtime-selected log level.
+- Added backend tag processing through `PatternFormatterOptions::process_tags` and support for
+  constructing macro-free `quill::Tags` from `std::string` and `std::string_view`.
+  ([#970](https://github.com/odygrd/quill/issues/970))
+- Added opt-in thread migration to `ManualBackendWorker` for externally serialized executor and
+  task-pool integrations. ([#972](https://github.com/odygrd/quill/issues/972))
 - Avoided allocating physical pages for unused bounded queue scratch space until it is needed.
   (Related: [#979](https://github.com/odygrd/quill/issues/979))
+- Precompiled `PatternFormatter` fields when the formatter is created instead of parsing the
+  pattern for every log record.
+- Added a backend fast path for applications with a single active frontend thread context.
+- Added Android NDK compile coverage for API 24 on `arm64-v8a` and `x86_64`.
 - Improvements to frontend throughput for macro-free logging and backend throughput
   for filtering, structured logging, and reusable transit-event data.
 

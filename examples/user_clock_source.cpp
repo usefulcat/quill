@@ -29,7 +29,7 @@ public:
    * Required by TimestampClock
    * @return current time now, in nanoseconds since epoch
    */
-  uint64_t now() const override { return _timestamp_ns.load(std::memory_order_relaxed); }
+  uint64_t now() const noexcept override { return _timestamp_ns.load(std::memory_order_relaxed); }
 
   /**
    * set custom timestamp
@@ -66,7 +66,7 @@ int main()
     quill::PatternFormatterOptions{
       "%(time) %(short_source_location:<28) LOG_%(log_level:<9) %(logger:<12) %(message)",
       "%D %H:%M:%S.%Qns", quill::Timezone::LocalTime, false},
-    quill::ClockSourceType::User, &simulated_clock);
+    quill::ClockSource::custom(simulated_clock));
 
   // Change the LogLevel to print everything
   logger->set_log_level(quill::LogLevel::TraceL3);
@@ -80,4 +80,7 @@ int main()
   simulated_clock.set_timestamp(std::chrono::seconds{1655039000});
   LOG_INFO(logger, "This is a log info {} example", "string");
   LOG_DEBUG(logger, "This is a log debug example {}", 4);
+  logger->flush_log();
+  quill::Frontend::remove_logger_blocking(logger);
+  quill::Backend::stop();
 }

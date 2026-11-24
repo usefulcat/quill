@@ -1,19 +1,48 @@
 #include "doctest/doctest.h"
 
+#include "quill/Backend.h"
+
 #include "quill/backend/BackendUtilities.h"
 #include "quill/backend/BackendWorker.h"
 #include "quill/backend/BackendWorkerLock.h"
+#include "quill/backend/ThreadUtilities.h"
+#include "quill/backend/Utf8Conv.h"
 #include "quill/core/Filesystem.h"
 #include "quill/core/SinkManager.h"
 #include "quill/sinks/FileSink.h"
 
+#include <type_traits>
+
+#include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <string>
+#include <vector>
 
 TEST_SUITE_BEGIN("BackendUtilities");
 
 using namespace quill;
 using namespace quill::detail;
+
+TEST_CASE("backend_options_is_an_aggregate")
+{
+  // Allows designated initializers in C++20
+  static_assert(std::is_aggregate_v<quill::BackendOptions>);
+
+  quill::BackendOptions const options{"custom_backend"};
+  REQUIRE_EQ(options.thread_name, "custom_backend");
+  REQUIRE_EQ(options.sleep_duration, std::chrono::microseconds{100});
+}
+
+TEST_CASE("version_macros_match_version_constants")
+{
+  static_assert(QUILL_VERSION == (QUILL_VERSION_MAJOR * 10000 + QUILL_VERSION_MINOR * 100 + QUILL_VERSION_PATCH));
+  static_assert(quill::Version == QUILL_VERSION);
+  static_assert(quill::VersionMajor == QUILL_VERSION_MAJOR);
+
+  // The inline namespace is named after the major version
+  REQUIRE_EQ(&quill::v14::VersionMajor, &quill::VersionMajor);
+}
 
 TEST_CASE("normalize_file_sink_path_preserves_special_paths")
 {
@@ -116,12 +145,10 @@ TEST_CASE("backend_worker_lock_can_be_reacquired_after_release")
 
 TEST_CASE("get_process_id_matches_current_process")
 {
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__CYGWIN__)
   REQUIRE_EQ(get_process_id(), static_cast<uint32_t>(::GetCurrentProcessId()));
-#elif !defined(__CYGWIN__)
-  REQUIRE_EQ(get_process_id(), static_cast<uint32_t>(::getpid()));
 #else
-  REQUIRE_EQ(get_process_id(), 0u);
+  REQUIRE_EQ(get_process_id(), static_cast<uint32_t>(::getpid()));
 #endif
 }
 
@@ -136,7 +163,7 @@ TEST_CASE("set_cpu_affinity_accepts_current_cpu_and_rejects_invalid_cpu")
   int selected_cpu = -1;
   for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu)
   {
-    if (CPU_ISSET(cpu, &original_cpuset))
+    if (CPU_ISSET(static_cast<size_t>(cpu), &original_cpuset))
     {
       selected_cpu = cpu;
       break;
@@ -171,6 +198,184 @@ TEST_CASE("set_thread_name_validates_length")
 #else
   return;
 #endif
+}
+
+TEST_CASE("windows_thread_name_preserves_long_unicode_descriptions")
+{
+#if defined(_WIN32) && !defined(__CYGWIN__) && !defined(__MINGW32__) && !defined(QUILL_NO_THREAD_NAME_SUPPORT)
+  HMODULE const kernel{::GetModuleHandleW(L"KernelBase.dll")};
+  if (!kernel || !::GetProcAddress(kernel, "GetThreadDescription") ||
+      !::GetProcAddress(kernel, "SetThreadDescription"))
+  {
+    return;
+  }
+
+  // 262 UTF-16 code units with a surrogate pair across the old 256 unit limit
+  std::string const previous{get_thread_name()};
+  std::string const name{std::string(255, 'a') + "\xf0\x9f\x98\x80" + " tail"};
+  set_thread_name(name.c_str());
+  std::string const actual{get_thread_name()};
+  set_thread_name(previous.c_str());
+
+  REQUIRE_EQ(actual, name);
+#endif
+}
+
+TEST_CASE("utf8_encode_converts_around_the_short_string_buffer_size")
+{
+#if defined(_WIN32)
+  // Arguments are stored unaligned in the queue, so encode from an odd address
+  auto const encode = [](std::wstring const& text)
+  {
+    std::vector<std::byte> storage(text.size() * sizeof(wchar_t) + 1u);
+    std::memcpy(storage.data() + 1, text.data(), text.size() * sizeof(wchar_t));
+    return utf8_encode(storage.data() + 1, text.size());
+  };
+
+  auto const repeat = [](std::string const& text, size_t count)
+  {
+    std::string result;
+    for (size_t i = 0; i < count; ++i)
+    {
+      result += text;
+    }
+    return result;
+  };
+
+  // Up to 64 UTF-16 code units use a stack buffer of three UTF-8 bytes per code unit
+  REQUIRE_EQ(encode(std::wstring(64, L'\u4e2d')), repeat("\xe4\xb8\xad", 64));
+  REQUIRE_EQ(encode(std::wstring(65, L'\u4e2d')), repeat("\xe4\xb8\xad", 65));
+
+  std::wstring emoji;
+  for (size_t i = 0; i < 32; ++i)
+  {
+    emoji += L"\U0001F600";
+  }
+  REQUIRE_EQ(encode(emoji), repeat("\xf0\x9f\x98\x80", 32));
+
+  // A surrogate pair split at the end becomes U+FFFD
+  std::wstring const split_pair{std::wstring(63, L'a') + static_cast<wchar_t>(0xD83D)};
+  REQUIRE_EQ(encode(split_pair), std::string(63, 'a') + "\xef\xbf\xbd");
+#endif
+}
+
+TEST_CASE("get_thread_name_returns_names_longer_than_15_characters")
+{
+#if defined(__APPLE__) && !defined(QUILL_NO_THREAD_NAME_SUPPORT)
+  // Unlike Linux, macOS keeps thread names of up to 63 bytes
+  std::string const long_thread_name{"quill-thread-name-longer-than-15"};
+  set_thread_name(long_thread_name.data());
+
+  REQUIRE_EQ(get_thread_name(), long_thread_name);
+#else
+  return;
+#endif
+}
+
+TEST_CASE("timestamp_ordering_grace_period_survives_wall_clock_corrections")
+{
+  uint64_t steady_time{100};
+  size_t clock_reads{0};
+  auto steady_now = [&]()
+  {
+    ++clock_reads;
+    return steady_time;
+  };
+
+  // Ordinary eligible records need no extra clock read.
+  auto const [defer_eligible, eligible_deadline] =
+    should_defer_timestamp(90, 100, 5, 0, steady_time, steady_now);
+  CHECK_FALSE(defer_eligible);
+  CHECK_EQ(eligible_deadline, 0u);
+  CHECK_EQ(clock_reads, 0u);
+
+  auto const [defer_future, first_deadline] =
+    should_defer_timestamp(110, 100, 5, eligible_deadline, steady_time, steady_now);
+  CHECK(defer_future);
+  CHECK_EQ(first_deadline, 105u);
+
+  // Moving wall time backwards must not extend the original grace deadline.
+  steady_time = 104;
+  auto const [defer_after_rollback, deadline_after_rollback] =
+    should_defer_timestamp(110, 40, 5, first_deadline, steady_time, steady_now);
+  CHECK(defer_after_rollback);
+  CHECK_EQ(deadline_after_rollback, first_deadline);
+
+  steady_time = 105;
+  auto const [defer_after_expiry, deadline_after_expiry] =
+    should_defer_timestamp(110, 41, 5, deadline_after_rollback, steady_time, steady_now);
+  CHECK_FALSE(defer_after_expiry);
+  CHECK_EQ(deadline_after_expiry, 0u);
+
+  // The next head gets its own grace window; a wall-clock catch-up can release it early.
+  auto const [defer_next_head, next_deadline] =
+    should_defer_timestamp(120, 41, 5, deadline_after_expiry, steady_time, steady_now);
+  CHECK(defer_next_head);
+  CHECK_EQ(next_deadline, 110u);
+
+  auto const [defer_after_catch_up, deadline_after_catch_up] =
+    should_defer_timestamp(120, 120, 5, next_deadline, steady_time, steady_now);
+  CHECK_FALSE(defer_after_catch_up);
+  CHECK_EQ(deadline_after_catch_up, 0u);
+  CHECK_EQ(clock_reads, 2u);
+
+  auto const [defer_new_head, new_deadline] =
+    should_defer_timestamp(121, 120, 5, deadline_after_catch_up, steady_time, steady_now);
+  CHECK(defer_new_head);
+  CHECK_EQ(new_deadline, 110u);
+}
+
+TEST_CASE("timestamp_ordering_grace_period_keeps_a_consistent_scan_cutoff")
+{
+  uint64_t steady_time{203};
+  auto steady_now = [&]() { return steady_time; };
+
+  // Wall time is steady time + 900. Both messages were published before the scan.
+  auto const [defer_older, older_deadline] = should_defer_timestamp(1100, 1092, 10, 0, 202, steady_now);
+  steady_time = 204;
+  auto const [defer_newer, newer_deadline] = should_defer_timestamp(1101, 1092, 10, 0, 202, steady_now);
+  REQUIRE(defer_older);
+  REQUIRE(defer_newer);
+
+  // The next scan samples wall time at 1109, giving a cutoff of 1099. The backend
+  // checks the older head, then is descheduled until both steady deadlines expire.
+  steady_time = 210;
+  auto const [defer_older_after_pause, older_next_deadline] =
+    should_defer_timestamp(1100, 1099, 10, older_deadline, 209, steady_now);
+  steady_time = 215;
+  auto const [defer_newer_after_pause, newer_next_deadline] =
+    should_defer_timestamp(1101, 1099, 10, newer_deadline, 209, steady_now);
+
+  // A later clock read must not release the newer head while the older head stays queued.
+  CHECK(defer_older_after_pause);
+  CHECK(defer_newer_after_pause);
+  CHECK_EQ(older_next_deadline, older_deadline);
+  CHECK_EQ(newer_next_deadline, newer_deadline);
+
+  // With a fresh cutoff, both heads are eligible and can be merged in timestamp order.
+  auto const [defer_older_next_scan, older_final_deadline] =
+    should_defer_timestamp(1100, 1105, 10, older_next_deadline, 215, steady_now);
+  auto const [defer_newer_next_scan, newer_final_deadline] =
+    should_defer_timestamp(1101, 1105, 10, newer_next_deadline, 215, steady_now);
+  CHECK_FALSE(defer_older_next_scan);
+  CHECK_FALSE(defer_newer_next_scan);
+  CHECK_EQ(older_final_deadline, 0u);
+  CHECK_EQ(newer_final_deadline, 0u);
+}
+
+/***/
+TEST_CASE("prefetch_cache_line_accepts_any_address")
+{
+  // A prefetch is a hint that reads nothing and cannot fault, so there is no result to check:
+  // the addresses below are the first and last byte of a buffer, one past its end and nullptr
+  std::vector<char> const buffer(1024, 'x');
+
+  prefetch_cache_line(buffer.data());
+  prefetch_cache_line(buffer.data() + 1023);
+  prefetch_cache_line(buffer.data() + buffer.size());
+  prefetch_cache_line(nullptr);
+
+  CHECK_EQ(buffer.front(), 'x');
 }
 
 TEST_SUITE_END();

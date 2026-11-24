@@ -44,6 +44,7 @@ set(EXAMPLE_TARGETS
         quill_example_json_console_logging_custom_json
         quill_example_manual_backend_worker
         quill_example_csv_writing
+        quill_example_pcap_writing
         quill_example_json_file_logging
         quill_example_user_defined_types_logging_custom_codec
         quill_example_user_defined_types_logging_deferred_format
@@ -87,6 +88,12 @@ if (TARGET quill_module)
     target_link_libraries(quill_example_console_logging_module PRIVATE quill_module)
 
     list(APPEND EXAMPLE_TARGETS quill_example_console_logging_module)
+
+    if (QUILL_BUILD_TESTS)
+        add_test(NAME quill_module_shutdown_test COMMAND quill_example_console_logging_module)
+        set_tests_properties(quill_module_shutdown_test PROPERTIES
+                PASS_REGULAR_EXPRESSION "StringRef logging via module import")
+    endif ()
 endif ()
 
 install(TARGETS ${EXAMPLE_TARGETS}

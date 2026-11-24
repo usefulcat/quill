@@ -16,7 +16,8 @@ Upon creation, a sink object is registered and owned by a central manager object
 For files, one sink is created per normalized file path, and the file is opened once. If a
 compatible sink type is requested for an already opened file, the existing Sink object is returned
 and any additional constructor arguments are ignored. In RTTI-enabled builds, requesting the same
-name with an incompatible type throws ``QuillError``.
+name with an incompatible type throws ``QuillError``. Existing file aliases on POSIX are resolved for
+lookup, while the configured path is retained for file I/O.
 
 When creating a logger, one or more sinks for that logger can be specified. Sinks can only be registered during the logger creation.
 
@@ -87,15 +88,20 @@ You can extend the library by creating and integrating your own ``Sink`` types. 
 
 This can be useful if you want to direct log output to alternative destinations, such as a database, a network service, or even to write ``Parquet`` files.
 
-A custom sink can override ``write_log()``, ``write_metric()``, or both. The default
-``Sink::write_metric()`` implementation is a no-op, so existing log-only sinks do not need to
-change. If you want to export metrics, implement ``write_metric()`` and bind a logger to that
-sink. See :doc:`Metrics <metrics>` for the metric publishing model and the Prometheus/custom-sink
+A custom sink implements ``write_log(LogRecord const&)`` and ``flush_sink(SinkFlushReason)``.
+``LogRecord`` holds the formatted message and statement, the metadata, thread, logger, level,
+named arguments and MDC of the record. Its views are valid only during the call, so copy anything
+the sink keeps. The flush reason distinguishes backend idle flushes, explicit
+``logger->flush_log()`` flushes, and the final flush at backend shutdown.
+
+To export metrics, also implement ``write_metric(MetricRecord const&)`` and bind a logger to that
+sink. The default ``Sink::write_metric()`` is a no-op, so log-only sinks need not implement it.
+See :doc:`Metrics <metrics>` for the metric publishing model and the Prometheus/custom-sink
 examples.
 
-Custom sinks can also override ``flush_sink(SinkFlushReason)`` in addition to ``flush_sink()``
-when they need to distinguish backend idle flushes, explicit ``logger->flush_log()`` flushes, and
-final backend shutdown flushes.
+To receive the bytes logged with ``LOG_BINARY``, implement ``write_binary(BinaryRecord const&)``.
+The default ``Sink::write_binary()`` is a no-op as well, and the stream and file sinks write the
+bytes as they are. See :doc:`Binary Protocols <binary_protocols>`.
 
 .. literalinclude:: ../examples/user_defined_sink.cpp
    :language: cpp

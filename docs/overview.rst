@@ -83,7 +83,9 @@ Sometimes, synchronized logging is necessary during application debugging. This 
 
 This causes the calling thread to pause until the log is processed and written to the log file by the backend thread before proceeding, which may have a notable impact on performance.
 
-Note that the immediate flush feature can be completely disabled at compile time by defining `QUILL_ENABLE_IMMEDIATE_FLUSH=0`, which eliminates the conditional branch from the hot path for better performance when immediate flushing is never needed.
+Set ``FrontendOptions::enable_immediate_flush = false`` to compile out immediate-flush support
+and its hot-path check. The default is ``true`` for both macros and the macro-free API.
+Explicit ``flush_log()`` calls remain available. See :doc:`recipes` for a compiled example.
 
 Handling Application Crashes
 ----------------------------
@@ -108,15 +110,21 @@ If you use your own POSIX signal handler, keep it minimal and avoid calling the 
 
 :cpp:struct:`SignalHandlerOptions` allows you to configure:
 
-- ``catchable_signals`` — the list of signals to handle (defaults to ``SIGTERM``, ``SIGINT``, ``SIGABRT``, ``SIGFPE``, ``SIGILL``, ``SIGSEGV``).
-- ``timeout_seconds`` — alarm timeout to prevent the process from hanging in the signal handler (Linux only, defaults to 20 seconds).
+- ``catchable_signals`` — the list of signals to handle (defaults to ``SIGTERM``, ``SIGINT``, ``SIGABRT``, ``SIGFPE``, ``SIGILL``, ``SIGSEGV`` and, where available, ``SIGBUS``). After flushing, the signal is re-raised with its default disposition, so the process terminates by that signal, and ``Backend::stop()`` reinstalls the handlers that were installed before.
+- ``timeout_seconds`` — alarm timeout to prevent the process from hanging in the signal handler (POSIX only, defaults to 20 seconds; 0 disables it).
 - ``logger_name`` — the logger to use for crash reporting. If empty, the signal handler automatically selects the first valid logger.
-- ``excluded_logger_substrings`` — logger names containing these substrings are skipped during automatic selection (defaults to ``{"__csv__"}``).
+- ``excluded_logger_substrings`` — logger names containing these substrings are skipped during automatic selection (defaults to ``{"__csv__", "__binary__"}``, the loggers of the csv, binary and pcap writers). When every logger is skipped, the handler logs nothing and still flushes the sinks.
 
 On Windows, ``Backend::start()`` installs structured exception handling and a process-wide
 console control handler. CRT signal handlers are thread-specific; call
 ``quill::init_signal_handler<FrontendOptions>()`` on each frontend/user thread that needs CRT
 signal handling. Do not install the CRT signal handler on the backend worker thread.
+When installing an application exception filter, serialize the installation with
+``Backend::start()`` and ``Backend::stop()``. If the application replaces Quill's
+filter while the backend is running, ``Backend::stop()`` keeps the replacement installed
+and later ``Backend::start()`` calls do not install Quill's filter over it. Quill's filter
+then runs only when the application's filter forwards to it, and it still forwards to the
+filter installed before Quill's.
 
 Log Messages Timestamp Order
 ----------------------------

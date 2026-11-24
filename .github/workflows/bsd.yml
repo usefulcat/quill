@@ -23,7 +23,7 @@ on:
 jobs:
   FreeBSD:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       matrix:
         build_type: [ Release ]
@@ -36,7 +36,7 @@ jobs:
         with:
           release: '14.2'
           arch: 'x86_64'
-          mem: 16384
+          mem: 8192
           cpu: 4
           usesh: true
           prepare: |
@@ -48,7 +48,7 @@ jobs:
 
   NetBSD:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       matrix:
         build_type: [ Release ]
@@ -61,7 +61,7 @@ jobs:
         with:
           release: '10.0'
           arch: 'x86_64'
-          mem: 16384
+          mem: 8192
           cpu: 4
           usesh: true
           prepare: |
@@ -73,7 +73,7 @@ jobs:
 
   OpenBSD:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       matrix:
         build_type: [ Release ]
@@ -86,7 +86,7 @@ jobs:
         with:
           release: '7.7'
           arch: 'x86_64'
-          mem: 16384
+          mem: 8192
           cpu: 4
           usesh: true
           prepare: |
@@ -98,7 +98,7 @@ jobs:
 
   DragonFlyBSD:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       matrix:
         build_type: [ Release ]
@@ -110,12 +110,13 @@ jobs:
         uses: vmactions/dragonflybsd-vm@v1
         with:
           release: '6.4.2'
-          mem: 16384
+          mem: 8192
           cpu: 4
           usesh: true
           prepare: |
-            pkg install -y cmake gcc11
+            pkg upgrade -y
+            pkg install -y cmake gcc12
           run: |
-            cmake -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DCMAKE_C_COMPILER=$(which gcc11) -DCMAKE_CXX_COMPILER=$(which g++11) -DCMAKE_CXX_STANDARD=17 -DQUILL_VERBOSE_MAKEFILE=ON -DQUILL_BUILD_TESTS=ON -DQUILL_BUILD_EXAMPLES=ON "$GITHUB_WORKSPACE"
+            cmake -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DCMAKE_C_COMPILER=$(which gcc12) -DCMAKE_CXX_COMPILER=$(which g++12) -DCMAKE_CXX_STANDARD=17 -DQUILL_VERBOSE_MAKEFILE=ON -DQUILL_BUILD_TESTS=ON -DQUILL_BUILD_EXAMPLES=ON "$GITHUB_WORKSPACE"
             cmake --build . --config ${{ matrix.build_type }} --parallel 4
             ctest --build-config ${{ matrix.build_type }} --output-on-failure -R "^multi_frontend_threads$"

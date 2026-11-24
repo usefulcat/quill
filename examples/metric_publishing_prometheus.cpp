@@ -46,8 +46,7 @@ int main()
   exposer_config.num_threads = 1;
 
   // Create Prometheus Sink
-  auto prom_sink = std::static_pointer_cast<quill::PrometheusSink>(
-    quill::Frontend::create_or_get_sink<quill::PrometheusSink>("prometheus_sink", exposer_config));
+  auto prom_sink = quill::Frontend::create_or_get_sink<quill::PrometheusSink>("prometheus_sink", exposer_config);
 
   // Prometheus-specific registration lives on the sink.
   prom_sink->register_counter(requests_total_metric, "Total number of handled requests");
@@ -75,5 +74,7 @@ int main()
     // or the as function
     metrics_logger->publish_metric(request_latency_metric, 3.0);
     metrics_logger->publish_metric(requests_total_metric, 1.0);
+    // Reuse the same registration with labels supplied at runtime.
+    metrics_logger->publish_dynamic_metric("requests_total", {{"method", "POST"}, {"status", "500"}}, 1.0);
   }
 }

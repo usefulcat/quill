@@ -24,7 +24,7 @@ namespace
 class TestUserClockSource : public UserClockSource
 {
 public:
-  uint64_t now() const override { return _timestamp.load(std::memory_order_relaxed); }
+  uint64_t now() const noexcept override { return _timestamp.load(std::memory_order_relaxed); }
 
   void set_timestamp(std::chrono::nanoseconds timestamp)
   {
@@ -95,7 +95,7 @@ TEST_CASE("rotating_sink_delayed_rotation")
   Logger* logger = Frontend::create_or_get_logger(
     logger_name, std::move(rotating_sink),
     PatternFormatterOptions{"%(message)", "%H:%M:%S.%Qns", Timezone::GmtTime, false},
-    ClockSourceType::User, &user_clock);
+    ClockSource::custom(user_clock));
 
   // First log at t0 — opens the file with _open_file_timestamp = t0
   LOG_INFO(logger, "first at t0");
